@@ -156,7 +156,7 @@ eligible as (
         case
             when is_sinterklaas = 1 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 86400)
             when is_christmas = 1 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 86400)
-            when is_fout = 1 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 3456000)
+            when is_fout = 1 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 15724800)
             when is_oldies = 1 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 1209600)
             when category = 'Hits' then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 18000)
             else last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 86400)

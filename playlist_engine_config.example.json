@@ -19,7 +19,7 @@
     "default_low_watermark": 5,
     "candidate_multiplier": 4,
     "history_reset_on_exhaustion": true,
-    "artist_repeat_window_tracks": 15
+    "artist_repeat_window_tracks": 30
   },
   "playlists": {
     "DagMix": {

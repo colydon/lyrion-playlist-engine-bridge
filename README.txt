@@ -60,7 +60,7 @@ RATING
 COOLDOWN
 - Hits: 5 hours
 - Oldies: 14 days
-- Fout: 40 days
+- Fout: 182 days
 - Sinterklaas: 24 hours
 - Christmas: 24 hours
 - Other: 24 hours

@@ -191,7 +191,7 @@ class EngineConfig:
             default_low_watermark=default_low_watermark,
             candidate_multiplier=int(engine.get("candidate_multiplier", 4)),
             history_reset_on_exhaustion=bool(engine.get("history_reset_on_exhaustion", True)),
-            artist_repeat_window_tracks=max(0, int(engine.get("artist_repeat_window_tracks", 15))),
+            artist_repeat_window_tracks=max(0, int(engine.get("artist_repeat_window_tracks", 30))),
             auto_discover_playlists=auto_discover_playlists,
             skip_rules=list(raw.get("skip_rules", [])),
             playlists=playlist_catalog,
