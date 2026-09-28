@@ -1,0 +1,48 @@
+[%- pagetitle = 'Custom Playlists'; -%]
+
+[% PROCESS pageheader.html %]
+
+<div class="container">
+  <h1>Custom Playlists</h1>
+
+  [% IF player == '' %]
+    <p>No player selected in LMS.</p>
+  [% ELSE %]
+    <p>Selected player: <strong>[% engine_player_name | html %]</strong></p>
+
+    [% IF engine_success %]
+      <div style="padding:8px 12px; margin:10px 0; background:#e8f5e9; border:1px solid #81c784;">[% engine_success | html %]</div>
+    [% END %]
+
+    [% IF engine_error %]
+      <div style="padding:8px 12px; margin:10px 0; background:#ffebee; border:1px solid #e57373;">[% engine_error | html %]</div>
+    [% END %]
+
+    <p>
+      <a href="[% webroot %]plugins/PlaylistEngineBridge/playlistenginebridge_list.html?action=stop&amp;player=[% player | uri %]">Stop current custom playlist</a>
+    </p>
+
+    <table class="trackList" style="width:100%; border-collapse:collapse;">
+      <thead>
+        <tr>
+          <th style="text-align:left; padding:8px;">Playlist</th>
+          <th style="text-align:left; padding:8px;">Description</th>
+          <th style="text-align:left; padding:8px;">Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        [% FOREACH playlist IN engine_playlists %]
+          <tr>
+            <td style="padding:8px; vertical-align:top;"><strong>[% playlist.title | html %]</strong></td>
+            <td style="padding:8px; vertical-align:top;">[% playlist.description | html %]</td>
+            <td style="padding:8px; vertical-align:top;">
+              <a href="[% webroot %]plugins/PlaylistEngineBridge/playlistenginebridge_list.html?action=start&amp;playlist=[% playlist.id | uri %]&amp;player=[% player | uri %]">Start</a>
+            </td>
+          </tr>
+        [% END %]
+      </tbody>
+    </table>
+  [% END %]
+</div>
+
+[% PROCESS pagefooter.html %]

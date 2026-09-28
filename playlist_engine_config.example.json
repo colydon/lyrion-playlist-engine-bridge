@@ -1,0 +1,69 @@
+{
+  "api": {
+    "host": "0.0.0.0",
+    "port": 8787,
+    "token": "3JHskCFi31nHRKuDg4ObeV4TqZpB07s7-Ni6PaXXOB8"
+  },
+  "lms": {
+    "base_url": "http://127.0.0.1:9000",
+    "library_db": "/usr/local/slimserver/Cache/library.db",
+    "persist_db": "/usr/local/slimserver/prefs/persist.db"
+  },
+  "engine": {
+    "playlists_dir": ".",
+    "auto_discover_playlists": true,
+    "state_db": "playlist_engine_state.db",
+    "poll_interval_seconds": 10,
+    "default_initial_count": 20,
+    "default_topup_count": 10,
+    "default_low_watermark": 5,
+    "candidate_multiplier": 4,
+    "history_reset_on_exhaustion": true
+  },
+  "playlists": {
+    "DagMix": {
+      "title": "DagMix",
+      "sql_file": "DagMix.sql",
+      "description": "Dagelijkse mix met seizoens- en kwaliteitsregels.",
+      "start_with_genre": "Hits",
+      "initial_count": 20,
+      "topup_count": 10,
+      "low_watermark": 5
+    },
+    "AvondMix": {
+      "title": "AvondMix",
+      "sql_file": "AvondMix.sql",
+      "description": "Rustiger profiel met meer oldies, minder hits en geen party of fout.",
+      "initial_count": 20,
+      "topup_count": 10,
+      "low_watermark": 5
+    }
+  },
+  "skip_rules": [
+    {
+      "kind": "exclude_genre",
+      "value": "Karaoke",
+      "enabled": true
+    },
+    {
+      "kind": "exclude_genre",
+      "value": "Live",
+      "enabled": true
+    },
+    {
+      "kind": "exclude_genre",
+      "value": "Kinderliedjes",
+      "enabled": true
+    },
+    {
+      "kind": "exclude_genre",
+      "value": "Kindermuziek",
+      "enabled": true
+    },
+    {
+      "kind": "min_rating_stars",
+      "value": 2.0,
+      "enabled": true
+    }
+  ]
+}
