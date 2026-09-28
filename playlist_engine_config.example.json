@@ -19,7 +19,10 @@
     "default_low_watermark": 5,
     "candidate_multiplier": 4,
     "history_reset_on_exhaustion": true,
-    "artist_repeat_window_tracks": 30
+    "artist_repeat_window_tracks": 30,
+    "player_recovery_enabled": true,
+    "player_recovery_grace_seconds": 45,
+    "player_recovery_cooldown_seconds": 120
   },
   "playlists": {
     "DagMix": {

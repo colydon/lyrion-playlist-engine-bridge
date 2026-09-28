@@ -113,6 +113,9 @@ class EngineConfig:
     candidate_multiplier: int
     history_reset_on_exhaustion: bool
     artist_repeat_window_tracks: int
+    player_recovery_enabled: bool
+    player_recovery_grace_seconds: int
+    player_recovery_cooldown_seconds: int
     auto_discover_playlists: bool
     skip_rules: List[Dict[str, Any]]
     playlists: Dict[str, PlaylistDefinition]
@@ -192,6 +195,9 @@ class EngineConfig:
             candidate_multiplier=int(engine.get("candidate_multiplier", 4)),
             history_reset_on_exhaustion=bool(engine.get("history_reset_on_exhaustion", True)),
             artist_repeat_window_tracks=max(0, int(engine.get("artist_repeat_window_tracks", 30))),
+            player_recovery_enabled=bool(engine.get("player_recovery_enabled", True)),
+            player_recovery_grace_seconds=max(5, int(engine.get("player_recovery_grace_seconds", 45))),
+            player_recovery_cooldown_seconds=max(10, int(engine.get("player_recovery_cooldown_seconds", 120))),
             auto_discover_playlists=auto_discover_playlists,
             skip_rules=list(raw.get("skip_rules", [])),
             playlists=playlist_catalog,
@@ -726,6 +732,11 @@ class SessionManager:
         self.selector = selector
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._disconnected_since: Dict[str, float] = {}
+        self._empty_queue_since: Dict[str, float] = {}
+        self._manual_suspend_reason: Dict[str, str] = {}
+        self._recover_after_disconnect: Dict[str, float] = {}
+        self._last_recovery_attempt_at: Dict[str, float] = {}
 
     def start_background_loop(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -738,6 +749,74 @@ class SessionManager:
         if self._thread:
             self._thread.join(timeout=5)
 
+    def _clear_runtime_state(self, player_id: str) -> None:
+        self._disconnected_since.pop(player_id, None)
+        self._empty_queue_since.pop(player_id, None)
+        self._manual_suspend_reason.pop(player_id, None)
+        self._recover_after_disconnect.pop(player_id, None)
+        self._last_recovery_attempt_at.pop(player_id, None)
+
+    def _can_attempt_recovery(self, player_id: str, now: float) -> bool:
+        last_attempt_at = self._last_recovery_attempt_at.get(player_id, 0.0)
+        if now - last_attempt_at < self.config.player_recovery_cooldown_seconds:
+            return False
+        self._last_recovery_attempt_at[player_id] = now
+        return True
+
+    def _build_session_tracks(
+        self,
+        session: Dict[str, Any],
+        current_queue_ids: Sequence[int],
+        desired_count: int,
+    ) -> List[Dict[str, Any]]:
+        playlist_name = str(session["playlist_name"])
+        player_id = str(session["player_id"])
+        playlist = self.config.playlist_definition(playlist_name)
+        effective_playlist = self.config.resolve_playlist_definition(playlist_name)
+
+        tracks: List[Dict[str, Any]] = []
+        start_track = self.selector.choose_start_track(
+            playlist_name,
+            player_id,
+            current_queue_ids,
+            effective_playlist.start_with_genre or playlist.start_with_genre,
+        )
+        if start_track:
+            tracks.append(start_track)
+            current_queue_ids = list(current_queue_ids) + [start_track["id"]]
+
+        remaining_count = max(int(desired_count) - len(tracks), 0)
+        if remaining_count > 0:
+            tracks.extend(self.selector.choose_tracks(playlist_name, player_id, remaining_count, current_queue_ids))
+        return tracks
+
+    def _recover_session(self, session: Dict[str, Any], reason: str) -> bool:
+        player_id = str(session["player_id"])
+        desired_count = max(int(session.get("initial_count") or self.config.default_initial_count), 1)
+        tracks = self._build_session_tracks(session, [], desired_count)
+        if not tracks:
+            LOGGER.warning("Could not recover managed session for %s because no replacement tracks were available.", player_id)
+            return False
+
+        self.lms.power_on(player_id)
+        self.lms.play_track(player_id, tracks[0]["id"])
+        for track in tracks[1:]:
+            self.lms.add_track(player_id, track["id"])
+        self.lms.play(player_id)
+
+        self.state_store.add_history(player_id, str(session["playlist_name"]), [track["id"] for track in tracks])
+        self._empty_queue_since.pop(player_id, None)
+        self._manual_suspend_reason.pop(player_id, None)
+        self._recover_after_disconnect.pop(player_id, None)
+        LOGGER.info(
+            "Recovered managed session for %s on %s after %s with %s tracks.",
+            player_id,
+            session["playlist_name"],
+            reason,
+            len(tracks),
+        )
+        return True
+
     def _run_loop(self) -> None:
         while not self._stop_event.is_set():
             try:
@@ -747,6 +826,7 @@ class SessionManager:
             self._stop_event.wait(self.config.poll_interval_seconds)
 
     def maintain_sessions(self) -> None:
+        now = time.time()
         for session in self.state_store.list_sessions():
             player_id = session["player_id"]
             try:
@@ -756,16 +836,81 @@ class SessionManager:
                 continue
 
             mode = str(status.get("mode") or "").lower()
-            power = int(status.get("power") or 0)
-            if power == 0 or mode in {"pause", "stop"}:
-                LOGGER.info("Stopping custom playlist session for %s because player state is mode=%s power=%s", player_id, mode, power)
-                self.state_store.stop_session(player_id)
-                continue
+            power = int(status.get("power") if status.get("power") is not None else 1)
+            connected = int(status.get("connected") if status.get("connected") is not None else 1)
 
             queue_ids = [int(item["id"]) for item in status.get("playlist_loop", []) if str(item.get("id", "")).isdigit()]
             current_index = int(status.get("playlist_cur_index") or 0)
             total_tracks = max(int(status.get("playlist_tracks") or 0), len(queue_ids))
             remaining = max(total_tracks - current_index - 1, 0)
+            queue_intact = total_tracks > 0 or bool(queue_ids)
+
+            if connected == 0:
+                if player_id not in self._disconnected_since:
+                    LOGGER.warning("Player %s disconnected; keeping the managed session active for recovery.", player_id)
+                    self._disconnected_since[player_id] = now
+                self._empty_queue_since.pop(player_id, None)
+                continue
+
+            disconnected_at = self._disconnected_since.pop(player_id, None)
+            if disconnected_at is not None:
+                self._recover_after_disconnect[player_id] = now
+                LOGGER.info("Player %s reconnected after %.0fs; evaluating managed session recovery.", player_id, now - disconnected_at)
+
+            if power == 0:
+                if self._manual_suspend_reason.get(player_id) != "power_off":
+                    LOGGER.info("Keeping managed session for %s idle because the player power is off.", player_id)
+                self._manual_suspend_reason[player_id] = "power_off"
+                self._empty_queue_since.pop(player_id, None)
+                continue
+
+            recovered_after_disconnect = player_id in self._recover_after_disconnect
+
+            if mode in {"pause", "stop"} and queue_intact and not recovered_after_disconnect:
+                suspend_reason = f"{mode}_with_queue"
+                if self._manual_suspend_reason.get(player_id) != suspend_reason:
+                    LOGGER.info(
+                        "Keeping managed session for %s suspended because player state is mode=%s with queue intact.",
+                        player_id,
+                        mode,
+                    )
+                self._manual_suspend_reason[player_id] = suspend_reason
+                self._empty_queue_since.pop(player_id, None)
+                continue
+
+            if recovered_after_disconnect and queue_intact and mode != "play":
+                if self.config.player_recovery_enabled and self._can_attempt_recovery(player_id, now):
+                    LOGGER.info("Resuming playback for %s after reconnect because the managed queue is still intact.", player_id)
+                    self.lms.play(player_id)
+                continue
+
+            if not queue_intact:
+                if player_id in self._manual_suspend_reason and not recovered_after_disconnect:
+                    LOGGER.info("Stopping managed session for %s because a manually suspended queue was cleared.", player_id)
+                    self.state_store.stop_session(player_id)
+                    self._clear_runtime_state(player_id)
+                    continue
+
+                empty_since = self._empty_queue_since.setdefault(player_id, now)
+                if not self.config.player_recovery_enabled:
+                    LOGGER.warning("Managed session for %s lost its queue but automatic recovery is disabled.", player_id)
+                    continue
+                if now - empty_since < self.config.player_recovery_grace_seconds:
+                    continue
+                if not self._can_attempt_recovery(player_id, now):
+                    continue
+                self._recover_session(session, f"queue empty while mode={mode or 'unknown'} power={power}")
+                continue
+
+            self._empty_queue_since.pop(player_id, None)
+
+            if mode == "play":
+                if player_id in self._manual_suspend_reason:
+                    LOGGER.info("Resuming managed session monitoring for %s after the player returned to play.", player_id)
+                self._manual_suspend_reason.pop(player_id, None)
+                self._recover_after_disconnect.pop(player_id, None)
+            elif mode in {"pause", "stop"}:
+                continue
 
             if remaining > int(session["low_watermark"]):
                 continue
@@ -822,6 +967,7 @@ class SessionManager:
             self.lms.add_track(resolved_player_id, track["id"])
         self.lms.play(resolved_player_id)
 
+        self._clear_runtime_state(resolved_player_id)
         self.state_store.save_session(resolved_player_id, resolved_player_name, playlist_name, playlist)
         self.state_store.add_history(resolved_player_id, playlist_name, [track["id"] for track in tracks])
 
@@ -856,6 +1002,7 @@ class SessionManager:
     def stop_playlist(self, player_name: Optional[str], player_id: Optional[str]) -> Dict[str, Any]:
         player = self.lms.resolve_player(player_name, player_id)
         self.state_store.stop_session(player["playerid"])
+        self._clear_runtime_state(player["playerid"])
         return {
             "player_id": player["playerid"],
             "player_name": player["name"],

@@ -15,6 +15,8 @@ The LMS bridge lives in [lms_plugin/PlaylistEngineBridge/Plugin.pm](c:/Users/ric
 - Multiple playlists are supported through the `playlists` section in [playlist_engine_config.example.json](c:/Users/rickl/Desktop/cti_dagmix_v3/playlist_engine_config.example.json).
 - The API can target any player by `player_name` or `player_id`.
 - The queue auto-top-up loop is active for every managed session.
+- Managed sessions now stay attached to the player through brief disconnects and empty-queue failures.
+- Manual `pause` or `stop` with a queue still present does not auto-restart playback.
 - LMS can show a `Custom Playlists` menu and start playback on the player currently selected in LMS.
 
 **1. Configure The Engine**
@@ -25,6 +27,7 @@ Copy [playlist_engine_config.example.json](c:/Users/rickl/Desktop/cti_dagmix_v3/
 - `lms.library_db`
 - `lms.persist_db`
 - `engine.playlists_dir`
+- `engine.player_recovery_*`
 
 Example playlist catalog:
 
@@ -57,6 +60,12 @@ If `engine.auto_discover_playlists` is `true`, extra `.sql` files in the playlis
 
 `routing_windows` are evaluated in the engine host's local time. This lets one logical playlist switch source SQL during playback top-ups without starting a new LMS session.
 
+Managed-session recovery is controlled by these engine settings:
+
+- `player_recovery_enabled`: keep sessions alive and try to recover after unintended player-side failures
+- `player_recovery_grace_seconds`: wait before rebuilding an unexpectedly empty queue
+- `player_recovery_cooldown_seconds`: minimum time between recovery attempts for the same player
+
 **2. Run The Engine**
 Run the service on the LMS host itself, or on a machine that has filesystem access to the LMS databases:
 
@@ -80,6 +89,14 @@ List players:
 
 ```text
 GET http://<engine-host>:8787/api/players?token=<token>
+```
+
+Recovery behavior:
+
+- if a managed player disconnects and later reconnects, the engine can resume playback or rebuild the queue
+- if a managed queue disappears unexpectedly, the engine can rebuild it after the configured grace period
+- if a user pauses or stops the player and the queue is still intact, the engine keeps the session suspended and does not auto-restart
+- `POST /api/stop` still disables management for that player immediately
 
 **PiCore Watchdog**
 For PiCore or other lightweight installs, keep the engine behind a tiny shell watchdog instead of a one-shot `nohup` start.
