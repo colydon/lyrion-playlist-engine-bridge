@@ -80,6 +80,28 @@ List players:
 
 ```text
 GET http://<engine-host>:8787/api/players?token=<token>
+
+**PiCore Watchdog**
+For PiCore or other lightweight installs, keep the engine behind a tiny shell watchdog instead of a one-shot `nohup` start.
+
+The watchdog script in [playlist_engine_watchdog.sh](c:/Users/rickl/Desktop/cti_dagmix_v3/playlist_engine_watchdog.sh) does two things:
+
+- restarts the engine if the Python process is gone
+- restarts the engine if `/api/health` fails twice in a row
+
+The checks are intentionally light:
+
+- one local health request every 30 seconds
+- one background shell loop
+- no full library scan or extra database work
+
+On PiCore, the recommended pattern is:
+
+```sh
+nohup /home/tc/playlist_engine/playlist_engine_watchdog.sh >/dev/null 2>&1 &
+```
+
+and let `bootlocal.sh` start the watchdog, not `playlist_engine.py` directly.
 ```
 
 **3. Homey Calls**
