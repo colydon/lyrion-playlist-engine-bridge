@@ -18,7 +18,8 @@
     "default_topup_count": 10,
     "default_low_watermark": 5,
     "candidate_multiplier": 4,
-    "history_reset_on_exhaustion": true
+    "history_reset_on_exhaustion": true,
+    "artist_repeat_window_tracks": 15
   },
   "playlists": {
     "DagMix": {

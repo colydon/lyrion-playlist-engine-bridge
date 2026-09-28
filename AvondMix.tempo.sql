@@ -192,9 +192,9 @@ category_targets as (
         case ct.category
             when 'Sinterklaas' then s.sinterklaas_share
             when 'Christmas'   then s.christmas_share
-            when 'Hits'        then max(0.0, 1.0 - s.sinterklaas_share - s.christmas_share) * 0.040
-            when 'Oldies'      then max(0.0, 1.0 - s.sinterklaas_share - s.christmas_share) * 0.160
-            else                    max(0.0, 1.0 - s.sinterklaas_share - s.christmas_share) * 0.800
+            when 'Hits'        then max(0.0, 1.0 - s.sinterklaas_share - s.christmas_share) * 0.060
+            when 'Oldies'      then max(0.0, 1.0 - s.sinterklaas_share - s.christmas_share) * 0.180
+            else                    max(0.0, 1.0 - s.sinterklaas_share - s.christmas_share) * 0.760
         end as target_share
     from category_totals ct
     cross join settings s
@@ -209,9 +209,9 @@ weighted as (
         e.*,
         case
             when sc.active_target_share > 0 then ct.target_share / sc.active_target_share
-            when e.category = 'Hits'   then 0.040
-            when e.category = 'Oldies' then 0.160
-            else                            0.800
+            when e.category = 'Hits'   then 0.060
+            when e.category = 'Oldies' then 0.180
+            else                            0.760
         end as category_share,
         ct.total_selection_weight
     from eligible_pool e

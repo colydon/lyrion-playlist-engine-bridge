@@ -112,6 +112,7 @@ class EngineConfig:
     default_low_watermark: int
     candidate_multiplier: int
     history_reset_on_exhaustion: bool
+    artist_repeat_window_tracks: int
     auto_discover_playlists: bool
     skip_rules: List[Dict[str, Any]]
     playlists: Dict[str, PlaylistDefinition]
@@ -190,6 +191,7 @@ class EngineConfig:
             default_low_watermark=default_low_watermark,
             candidate_multiplier=int(engine.get("candidate_multiplier", 4)),
             history_reset_on_exhaustion=bool(engine.get("history_reset_on_exhaustion", True)),
+            artist_repeat_window_tracks=max(0, int(engine.get("artist_repeat_window_tracks", 15))),
             auto_discover_playlists=auto_discover_playlists,
             skip_rules=list(raw.get("skip_rules", [])),
             playlists=playlist_catalog,
@@ -468,14 +470,21 @@ class TrackSelector:
                 t.title,
                 t.url,
                 t.secs,
+                t.primary_artist as primary_artist_id,
+                coalesce(pa.name, '') as primary_artist_name,
                 coalesce(tp.rating, 0) as rating,
-                group_concat(distinct g.name) as genres
+                group_concat(distinct g.name) as genres,
+                group_concat(distinct ct.contributor) as contributor_ids,
+                group_concat(distinct ca.name) as contributor_names
             from tracks t
             left join persist.tracks_persistent tp on tp.urlmd5 = t.urlmd5
+            left join contributors pa on pa.id = t.primary_artist
             left join genre_track gt on gt.track = t.id
             left join genres g on g.id = gt.genre
+            left join contributor_track ct on ct.track = t.id
+            left join contributors ca on ca.id = ct.contributor
             where t.id in ({placeholders})
-            group by t.id, t.title, t.url, t.secs, tp.rating
+            group by t.id, t.title, t.url, t.secs, t.primary_artist, pa.name, tp.rating
             """,
             [int(track_id) for track_id in track_ids],
         ).fetchall()
@@ -485,6 +494,43 @@ class TrackSelector:
             genres: List[str] = []
             if row["genres"]:
                 genres = [genre.strip() for genre in str(row["genres"]).split(",") if genre.strip()]
+            artist_ids: List[int] = []
+            artist_names: List[str] = []
+            seen_artist_ids = set()
+            seen_artist_names = set()
+
+            primary_artist_id = row["primary_artist_id"]
+            if primary_artist_id is not None:
+                primary_artist_id_int = int(primary_artist_id)
+                artist_ids.append(primary_artist_id_int)
+                seen_artist_ids.add(primary_artist_id_int)
+            primary_artist_name = str(row["primary_artist_name"] or "").strip()
+            if primary_artist_name:
+                artist_names.append(primary_artist_name)
+                seen_artist_names.add(primary_artist_name.lower())
+
+            if row["contributor_ids"]:
+                for value in str(row["contributor_ids"]).split(","):
+                    value = value.strip()
+                    if not value:
+                        continue
+                    contributor_id = int(value)
+                    if contributor_id in seen_artist_ids:
+                        continue
+                    artist_ids.append(contributor_id)
+                    seen_artist_ids.add(contributor_id)
+
+            if row["contributor_names"]:
+                for value in str(row["contributor_names"]).split(","):
+                    name = value.strip()
+                    if not name:
+                        continue
+                    lowered = name.lower()
+                    if lowered in seen_artist_names:
+                        continue
+                    artist_names.append(name)
+                    seen_artist_names.add(lowered)
+
             metadata[int(row["id"])] = {
                 "id": int(row["id"]),
                 "title": row["title"],
@@ -492,6 +538,8 @@ class TrackSelector:
                 "secs": row["secs"],
                 "rating": int(row["rating"] or 0),
                 "genres": genres,
+                "artist_ids": artist_ids,
+                "artists": artist_names,
             }
         return metadata
 
@@ -519,6 +567,24 @@ class TrackSelector:
     def _has_genre(track: Dict[str, Any], genre_name: str) -> bool:
         wanted = genre_name.strip().lower()
         return bool(wanted) and any(wanted == genre.lower() for genre in track.get("genres", []))
+
+    @staticmethod
+    def _artist_ids(track: Dict[str, Any]) -> set:
+        return {int(artist_id) for artist_id in track.get("artist_ids", []) if str(artist_id).isdigit()}
+
+    def _shares_recent_artist(self, track: Dict[str, Any], recent_tracks: Sequence[Dict[str, Any]]) -> bool:
+        artist_window = self.config.artist_repeat_window_tracks
+        if artist_window <= 0:
+            return False
+
+        track_artist_ids = self._artist_ids(track)
+        if not track_artist_ids:
+            return False
+
+        for recent_track in recent_tracks[-artist_window:]:
+            if track_artist_ids.intersection(self._artist_ids(recent_track)):
+                return True
+        return False
 
     def choose_start_track(
         self,
@@ -558,68 +624,96 @@ class TrackSelector:
     def choose_tracks(self, playlist_name: str, player_id: str, desired_count: int, current_queue_ids: Sequence[int]) -> List[Dict[str, Any]]:
         playlist = self.config.resolve_playlist_definition(playlist_name)
         sql_text = playlist.sql_path.read_text(encoding="utf-8")
-        history_ids = set(self.state_store.history_for_player(player_id, playlist_name))
+        history_track_ids = self.state_store.history_for_player(player_id, playlist_name)
+        history_ids = set(history_track_ids)
         current_ids = {int(track_id) for track_id in current_queue_ids}
         desired_count = max(1, desired_count)
 
-        attempts = 0
         selected: List[Dict[str, Any]] = []
         exhausted_once = False
 
         with self._connect() as connection:
-            while len(selected) < desired_count and attempts < 4:
-                candidate_limit = max(desired_count * self.config.candidate_multiplier * (attempts + 1), desired_count)
-                query = self._prepare_sql(sql_text, player_id, candidate_limit)
-                LOGGER.debug(
-                    "Selecting tracks for %s using %s on %s with limit %s",
-                    playlist_name,
-                    playlist.identifier,
-                    player_id,
-                    candidate_limit,
-                )
-                rows = connection.execute(query).fetchall()
-                track_ids = [int(row[0]) for row in rows if row[0] is not None]
+            recent_history_ids = history_track_ids[-self.config.artist_repeat_window_tracks :] if self.config.artist_repeat_window_tracks > 0 else []
+            recent_history_metadata = self._fetch_metadata(connection, recent_history_ids)
+            recent_tracks_seed = [recent_history_metadata[track_id] for track_id in recent_history_ids if track_id in recent_history_metadata]
 
-                if not track_ids and history_ids and self.config.history_reset_on_exhaustion and not exhausted_once:
-                    LOGGER.info("Resetting session history for %s/%s because the candidate set was exhausted.", player_id, playlist_name)
-                    self.state_store.clear_history(player_id, playlist_name)
-                    history_ids.clear()
-                    exhausted_once = True
-                    continue
-
-                metadata = self._fetch_metadata(connection, track_ids)
-                selected_before_attempt = len(selected)
-                for track_id in track_ids:
-                    if len(selected) >= desired_count:
-                        break
-                    if track_id in history_ids or track_id in current_ids:
-                        continue
-                    track = metadata.get(track_id)
-                    if not track:
-                        continue
-                    if not self._passes_skip_rules(track):
-                        continue
-                    selected.append(track)
-                    history_ids.add(track_id)
-                    current_ids.add(track_id)
-
-                if (
-                    len(selected) == selected_before_attempt
-                    and history_ids
-                    and self.config.history_reset_on_exhaustion
-                    and not exhausted_once
-                ):
+            for allow_artist_repeats in ([False, True] if self.config.artist_repeat_window_tracks > 0 else [True]):
+                if allow_artist_repeats and self.config.artist_repeat_window_tracks > 0 and len(selected) < desired_count:
                     LOGGER.info(
-                        "Resetting session history for %s/%s because only already queued or filtered candidates remained.",
+                        "Relaxing the %s-track artist spacing rule for %s/%s because too few candidates remained.",
+                        self.config.artist_repeat_window_tracks,
                         player_id,
                         playlist_name,
                     )
-                    self.state_store.clear_history(player_id, playlist_name)
-                    history_ids.clear()
-                    exhausted_once = True
-                    continue
 
-                attempts += 1
+                attempts = 0
+                recent_tracks = list(recent_tracks_seed) + list(selected)
+                while len(selected) < desired_count and attempts < 4:
+                    candidate_limit = max(desired_count * self.config.candidate_multiplier * (attempts + 1), desired_count)
+                    query = self._prepare_sql(sql_text, player_id, candidate_limit)
+                    LOGGER.debug(
+                        "Selecting tracks for %s using %s on %s with limit %s",
+                        playlist_name,
+                        playlist.identifier,
+                        player_id,
+                        candidate_limit,
+                    )
+                    rows = connection.execute(query).fetchall()
+                    track_ids = [int(row[0]) for row in rows if row[0] is not None]
+
+                    if not track_ids and history_ids and self.config.history_reset_on_exhaustion and not exhausted_once:
+                        LOGGER.info("Resetting session history for %s/%s because the candidate set was exhausted.", player_id, playlist_name)
+                        self.state_store.clear_history(player_id, playlist_name)
+                        history_ids.clear()
+                        recent_tracks_seed.clear()
+                        recent_tracks = list(selected)
+                        exhausted_once = True
+                        continue
+
+                    metadata = self._fetch_metadata(connection, track_ids)
+                    selected_before_attempt = len(selected)
+                    artist_blocked_count = 0
+                    for track_id in track_ids:
+                        if len(selected) >= desired_count:
+                            break
+                        if track_id in history_ids or track_id in current_ids:
+                            continue
+                        track = metadata.get(track_id)
+                        if not track:
+                            continue
+                        if not self._passes_skip_rules(track):
+                            continue
+                        if not allow_artist_repeats and self._shares_recent_artist(track, recent_tracks):
+                            artist_blocked_count += 1
+                            continue
+                        selected.append(track)
+                        recent_tracks.append(track)
+                        history_ids.add(track_id)
+                        current_ids.add(track_id)
+
+                    if (
+                        len(selected) == selected_before_attempt
+                        and history_ids
+                        and self.config.history_reset_on_exhaustion
+                        and artist_blocked_count == 0
+                        and not exhausted_once
+                    ):
+                        LOGGER.info(
+                            "Resetting session history for %s/%s because only already queued or filtered candidates remained.",
+                            player_id,
+                            playlist_name,
+                        )
+                        self.state_store.clear_history(player_id, playlist_name)
+                        history_ids.clear()
+                        recent_tracks_seed.clear()
+                        recent_tracks = list(selected)
+                        exhausted_once = True
+                        continue
+
+                    attempts += 1
+
+                if len(selected) >= desired_count:
+                    break
 
         return selected
 

@@ -5,7 +5,7 @@
   <module>Plugins::PlaylistEngineBridge::Plugin</module>
   <version>0.1.0</version>
   <description>Launch custom SQL-driven playlists from LMS.</description>
-  <creator>GitHub Copilot</creator>
+  <creator>Rick Luke</creator>
   <defaultState>enabled</defaultState>
   <playerMenu>BROWSE_MUSIC</playerMenu>
   <targetApplication>
