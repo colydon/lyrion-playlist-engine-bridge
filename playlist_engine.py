@@ -6,7 +6,7 @@ import re
 import sqlite3
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -53,6 +53,21 @@ class RequestError(Exception):
 
 
 @dataclass(frozen=True)
+class RoutingWindow:
+    playlist: str
+    start_minute: int
+    end_minute: int
+    label: str
+
+    def matches(self, minute_of_day: int) -> bool:
+        if self.start_minute == self.end_minute:
+            return True
+        if self.start_minute < self.end_minute:
+            return self.start_minute <= minute_of_day < self.end_minute
+        return minute_of_day >= self.start_minute or minute_of_day < self.end_minute
+
+
+@dataclass(frozen=True)
 class PlaylistDefinition:
     identifier: str
     title: str
@@ -63,6 +78,7 @@ class PlaylistDefinition:
     low_watermark: int
     description: str
     start_with_genre: str
+    routing_windows: List[RoutingWindow] = field(default_factory=list)
 
     def to_api_payload(self) -> Dict[str, Any]:
         return {
@@ -75,6 +91,7 @@ class PlaylistDefinition:
             "low_watermark": self.low_watermark,
             "description": self.description,
             "start_with_genre": self.start_with_genre,
+            "routing_targets": [window.playlist for window in self.routing_windows],
         }
 
 
@@ -123,6 +140,7 @@ class EngineConfig:
             merged_config.update(playlist_overrides.get(playlist_id, {}))
             sql_file = merged_config.get("sql_file", f"{playlist_id}.sql")
             sql_path = resolve_path(playlists_dir, sql_file)
+            routing_windows = cls._parse_routing_windows(merged_config.get("routing_windows", []), playlist_id)
             playlist_catalog[playlist_id] = PlaylistDefinition(
                 identifier=playlist_id,
                 title=str(merged_config.get("title", playlist_id)),
@@ -133,6 +151,7 @@ class EngineConfig:
                 low_watermark=int(merged_config.get("low_watermark", default_low_watermark)),
                 description=str(merged_config.get("description", "")).strip(),
                 start_with_genre=str(merged_config.get("start_with_genre", "")).strip(),
+                routing_windows=routing_windows,
             )
 
         if auto_discover_playlists and playlists_dir.exists():
@@ -141,6 +160,7 @@ class EngineConfig:
                 if playlist_id in playlist_catalog:
                     continue
                 merged_config = dict(playlist_overrides.get(playlist_id, {}))
+                routing_windows = cls._parse_routing_windows(merged_config.get("routing_windows", []), playlist_id)
                 playlist_catalog[playlist_id] = PlaylistDefinition(
                     identifier=playlist_id,
                     title=str(merged_config.get("title", playlist_id)),
@@ -151,6 +171,7 @@ class EngineConfig:
                     low_watermark=int(merged_config.get("low_watermark", default_low_watermark)),
                     description=str(merged_config.get("description", "")).strip(),
                     start_with_genre=str(merged_config.get("start_with_genre", "")).strip(),
+                    routing_windows=routing_windows,
                 )
 
         return cls(
@@ -174,12 +195,69 @@ class EngineConfig:
             playlists=playlist_catalog,
         )
 
+    @staticmethod
+    def _parse_clock_minutes(value: str) -> int:
+        match = re.fullmatch(r"(\d{1,2}):(\d{2})", str(value).strip())
+        if not match:
+            raise ValueError(f"Invalid routing time value: {value}")
+        hour = int(match.group(1))
+        minute = int(match.group(2))
+        if hour not in range(24) or minute not in range(60):
+            raise ValueError(f"Invalid routing time value: {value}")
+        return hour * 60 + minute
+
+    @classmethod
+    def _parse_routing_windows(cls, raw_windows: Any, playlist_id: str) -> List[RoutingWindow]:
+        windows: List[RoutingWindow] = []
+        for index, raw_window in enumerate(raw_windows or []):
+            if not isinstance(raw_window, dict):
+                raise ValueError(f"Invalid routing window for {playlist_id}: {raw_window}")
+            target = str(raw_window.get("playlist", "")).strip()
+            start = str(raw_window.get("start", "")).strip()
+            end = str(raw_window.get("end", "")).strip()
+            if not target or not start or not end:
+                raise ValueError(f"Incomplete routing window {index + 1} for {playlist_id}")
+            windows.append(
+                RoutingWindow(
+                    playlist=target,
+                    start_minute=cls._parse_clock_minutes(start),
+                    end_minute=cls._parse_clock_minutes(end),
+                    label=f"{start}-{end}",
+                )
+            )
+        return windows
+
     def playlist_definition(self, playlist_name: str) -> PlaylistDefinition:
         playlist = self.playlists.get(playlist_name)
         if not playlist or not playlist.enabled:
             raise RequestError(f"Playlist not found or disabled: {playlist_name}", HTTPStatus.NOT_FOUND)
         if not playlist.sql_path.exists():
             raise RequestError(f"Playlist SQL not found: {playlist.sql_path}", HTTPStatus.NOT_FOUND)
+        return playlist
+
+    def resolve_playlist_definition(self, playlist_name: str) -> PlaylistDefinition:
+        current_time = time.localtime()
+        return self._resolve_playlist_definition(playlist_name, current_time, set())
+
+    def _resolve_playlist_definition(
+        self,
+        playlist_name: str,
+        current_time: time.struct_time,
+        visited: set,
+    ) -> PlaylistDefinition:
+        if playlist_name in visited:
+            raise RequestError(f"Playlist routing loop detected for {playlist_name}", HTTPStatus.INTERNAL_SERVER_ERROR)
+        visited.add(playlist_name)
+
+        playlist = self.playlist_definition(playlist_name)
+        if not playlist.routing_windows:
+            return playlist
+
+        minute_of_day = current_time.tm_hour * 60 + current_time.tm_min
+        for window in playlist.routing_windows:
+            if window.matches(minute_of_day):
+                return self._resolve_playlist_definition(window.playlist, current_time, visited)
+
         return playlist
 
     def playlist_payloads(self) -> List[Dict[str, Any]]:
@@ -452,7 +530,7 @@ class TrackSelector:
         if not preferred_genre:
             return None
 
-        playlist = self.config.playlist_definition(playlist_name)
+        playlist = self.config.resolve_playlist_definition(playlist_name)
         sql_text = playlist.sql_path.read_text(encoding="utf-8")
         history_ids = set(self.state_store.history_for_player(player_id, playlist_name))
         current_ids = {int(track_id) for track_id in current_queue_ids}
@@ -478,7 +556,7 @@ class TrackSelector:
         return None
 
     def choose_tracks(self, playlist_name: str, player_id: str, desired_count: int, current_queue_ids: Sequence[int]) -> List[Dict[str, Any]]:
-        playlist = self.config.playlist_definition(playlist_name)
+        playlist = self.config.resolve_playlist_definition(playlist_name)
         sql_text = playlist.sql_path.read_text(encoding="utf-8")
         history_ids = set(self.state_store.history_for_player(player_id, playlist_name))
         current_ids = {int(track_id) for track_id in current_queue_ids}
@@ -492,7 +570,13 @@ class TrackSelector:
             while len(selected) < desired_count and attempts < 4:
                 candidate_limit = max(desired_count * self.config.candidate_multiplier * (attempts + 1), desired_count)
                 query = self._prepare_sql(sql_text, player_id, candidate_limit)
-                LOGGER.debug("Selecting tracks for %s on %s with limit %s", playlist_name, player_id, candidate_limit)
+                LOGGER.debug(
+                    "Selecting tracks for %s using %s on %s with limit %s",
+                    playlist_name,
+                    playlist.identifier,
+                    player_id,
+                    candidate_limit,
+                )
                 rows = connection.execute(query).fetchall()
                 track_ids = [int(row[0]) for row in rows if row[0] is not None]
 
@@ -613,6 +697,7 @@ class SessionManager:
 
     def start_playlist(self, playlist_name: str, player_name: Optional[str], player_id: Optional[str]) -> Dict[str, Any]:
         playlist = self.config.playlist_definition(playlist_name)
+        effective_playlist = self.config.resolve_playlist_definition(playlist_name)
         player = self.lms.resolve_player(player_name, player_id)
         resolved_player_id = player["playerid"]
         resolved_player_name = player["name"]
@@ -624,7 +709,7 @@ class SessionManager:
             playlist_name,
             resolved_player_id,
             queue_ids,
-            playlist.start_with_genre,
+            effective_playlist.start_with_genre or playlist.start_with_genre,
         )
         if start_track:
             tracks.append(start_track)
@@ -651,12 +736,15 @@ class SessionManager:
             "player_name": resolved_player_name,
             "playlist": playlist_name,
             "playlist_title": playlist.title,
+            "resolved_playlist": effective_playlist.identifier,
+            "resolved_playlist_title": effective_playlist.title,
             "queued_tracks": len(tracks),
             "tracks": tracks,
         }
 
     def preview_playlist(self, playlist_name: str, player_name: Optional[str], player_id: Optional[str], count: int) -> Dict[str, Any]:
         playlist = self.config.playlist_definition(playlist_name)
+        effective_playlist = self.config.resolve_playlist_definition(playlist_name)
         player = self.lms.resolve_player(player_name, player_id)
         status = self.lms.status(player["playerid"])
         queue_ids = [int(item["id"]) for item in status.get("playlist_loop", []) if str(item.get("id", "")).isdigit()]
@@ -666,6 +754,8 @@ class SessionManager:
             "player_name": player["name"],
             "playlist": playlist_name,
             "playlist_title": playlist.title,
+            "resolved_playlist": effective_playlist.identifier,
+            "resolved_playlist_title": effective_playlist.title,
             "tracks": tracks,
         }
 

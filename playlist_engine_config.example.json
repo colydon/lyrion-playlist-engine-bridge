@@ -24,7 +24,7 @@
     "DagMix": {
       "title": "DagMix",
       "sql_file": "DagMix.sql",
-      "description": "Dagelijkse mix met seizoens- en kwaliteitsregels.",
+      "description": "Dagprofiel met 35% hits, strakkere ratingbias en extra cooldowns voor oldies en fout.",
       "start_with_genre": "Hits",
       "initial_count": 20,
       "topup_count": 10,
@@ -33,10 +33,30 @@
     "AvondMix": {
       "title": "AvondMix",
       "sql_file": "AvondMix.sql",
-      "description": "Rustiger profiel met meer oldies, minder hits en geen party of fout.",
+      "description": "Rustiger avondprofiel met focus op 2,5-3,5 ster en slechts af en toe een hit.",
       "initial_count": 20,
       "topup_count": 10,
       "low_watermark": 5
+    },
+    "DagAvondMix": {
+      "title": "DagAvondMix",
+      "sql_file": "DagMix.sql",
+      "description": "Schakelt lokaal om 07:00 naar DagMix en om 18:00 naar AvondMix; seizoensregels blijven in de SQL.",
+      "initial_count": 8,
+      "topup_count": 4,
+      "low_watermark": 2,
+      "routing_windows": [
+        {
+          "start": "07:00",
+          "end": "18:00",
+          "playlist": "DagMix"
+        },
+        {
+          "start": "18:00",
+          "end": "07:00",
+          "playlist": "AvondMix"
+        }
+      ]
     }
   },
   "skip_rules": [

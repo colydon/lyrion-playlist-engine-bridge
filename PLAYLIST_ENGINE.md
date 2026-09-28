@@ -7,6 +7,7 @@ The Python service in [playlist_engine.py](c:/Users/rickl/Desktop/cti_dagmix_v3/
 - applying adjustable skip rules outside DynamicPlaylists4
 - exposing a webhook API for Homey
 - exposing a thin LMS menu bridge
+- optionally routing one logical playlist to different SQL playlists by local time
 
 The LMS bridge lives in [lms_plugin/PlaylistEngineBridge/Plugin.pm](c:/Users/rickl/Desktop/cti_dagmix_v3/lms_plugin/PlaylistEngineBridge/Plugin.pm).
 
@@ -37,18 +38,24 @@ Example playlist catalog:
     "topup_count": 10,
     "low_watermark": 5
   },
-  "RustMix": {
-    "title": "RustMix",
-    "sql_file": "RustMix.sql",
-    "description": "Rustiger selectieprofiel voor 's avonds.",
-    "initial_count": 15,
-    "topup_count": 8,
-    "low_watermark": 4
+  "DagAvondMix": {
+    "title": "DagAvondMix",
+    "sql_file": "DagMix.sql",
+    "description": "Schakelt lokaal om 07:00 naar DagMix en om 18:00 naar AvondMix.",
+    "initial_count": 8,
+    "topup_count": 4,
+    "low_watermark": 2,
+    "routing_windows": [
+      {"start": "07:00", "end": "18:00", "playlist": "DagMix"},
+      {"start": "18:00", "end": "07:00", "playlist": "AvondMix"}
+    ]
   }
 }
 ```
 
 If `engine.auto_discover_playlists` is `true`, extra `.sql` files in the playlist folder are also picked up automatically.
+
+`routing_windows` are evaluated in the engine host's local time. This lets one logical playlist switch source SQL during playback top-ups without starting a new LMS session.
 
 **2. Run The Engine**
 Run the service on the LMS host itself, or on a machine that has filesystem access to the LMS databases:
@@ -99,7 +106,7 @@ Start another playlist on Keuken:
 ```text
 POST http://<engine-host>:8787/api/start
 Header: X-API-Key: <token>
-Body: {"playlist":"RustMix","player_name":"Keuken"}
+Body: {"playlist":"DagAvondMix","player_name":"Keuken"}
 ```
 
 Preview 10 tracks for Beneden:
@@ -166,4 +173,5 @@ Because the selected LMS player is passed as `player_id`, you do not need separa
 - The engine is the source of truth for managed sessions and endless refill.
 - The LMS bridge is only a launcher.
 - Seasonal rules such as Kerst and Sinterklaas remain best kept in SQL.
+- Time-of-day switching such as DagMix at 16:00 and AvondMix after 18:00 can now live in the engine through `routing_windows`.
 - Generic skip rules such as Live, Karaoke or minimum rating remain easier to manage in JSON.

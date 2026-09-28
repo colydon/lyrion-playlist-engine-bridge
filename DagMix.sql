@@ -24,7 +24,10 @@
 -- Dec 27-Nov 30: 0% Christmas
 --
 -- Normal mix target:
--- Hits 25.0%, Oldies 3.0%, Party 5.0%, Fout 0.3%, Other 66.7%
+-- Hits 35.0%, Other 65.0%
+-- Oldies, Party and Fout are no longer explicit target buckets here.
+-- They can still occur naturally through rating weight, with extra cooldowns
+-- for Oldies and Fout to avoid over-rotation.
 --
 -- IMPORTANT:
 -- Custom Skip primary filter switching is intentional here.
@@ -55,7 +58,6 @@ genre_flags as (
         gt.track,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',kerst,') > 0 then 1 else 0 end) as is_christmas,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',sinterklaas,') > 0 then 1 else 0 end) as is_sinterklaas,
-        max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',sinterklaar,') > 0 then 1 else 0 end) as is_sinterklaar,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',hits,') > 0 then 1 else 0 end) as is_hit,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',oldies,') > 0 then 1 else 0 end) as is_oldies,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',party,') > 0 then 1 else 0 end) as is_party,
@@ -82,28 +84,27 @@ base_eligible as (
         s.sinterklaas_share,
         s.christmas_share,
         case
-            when coalesce(gf.is_sinterklaas, 0) = 1 or coalesce(gf.is_sinterklaar, 0) = 1 then 1
+            when coalesce(gf.is_sinterklaas, 0) = 1 then 1
             else 0
         end as is_sinterklaas,
         coalesce(gf.is_christmas, 0) as is_christmas,
+        coalesce(gf.is_oldies, 0) as is_oldies,
+        coalesce(gf.is_fout, 0) as is_fout,
         case
-            when (coalesce(gf.is_sinterklaas, 0) = 1 or coalesce(gf.is_sinterklaar, 0) = 1) and s.sinterklaas_share > 0 then 'Sinterklaas'
+            when coalesce(gf.is_sinterklaas, 0) = 1 and s.sinterklaas_share > 0 then 'Sinterklaas'
             when coalesce(gf.is_christmas, 0) = 1 and s.christmas_share > 0 then 'Christmas'
             when coalesce(gf.is_hit, 0) = 1 then 'Hits'
-            when coalesce(gf.is_oldies, 0) = 1 then 'Oldies'
-            when coalesce(gf.is_party, 0) = 1 then 'Party'
-            when coalesce(gf.is_fout, 0) = 1 then 'Fout'
             else 'Other'
         end as category,
         case
-            when coalesce(tp.rating, 0) >= 100 then 8.00
-            when coalesce(tp.rating, 0) >= 90  then 6.00
-            when coalesce(tp.rating, 0) >= 80  then 4.00
-            when coalesce(tp.rating, 0) >= 70  then 3.00
-            when coalesce(tp.rating, 0) >= 60  then 2.00
-            when coalesce(tp.rating, 0) >= 50  then 1.00
-            when coalesce(tp.rating, 0) >= 40  then 0.70
-            else 0.30
+            when coalesce(tp.rating, 0) >= 100 then 2.10
+            when coalesce(tp.rating, 0) >= 90  then 1.95
+            when coalesce(tp.rating, 0) >= 80  then 1.80
+            when coalesce(tp.rating, 0) >= 70  then 1.50
+            when coalesce(tp.rating, 0) >= 60  then 0.45
+            when coalesce(tp.rating, 0) >= 50  then 0.12
+            when coalesce(tp.rating, 0) >= 40  then 0.03
+            else 0.20
         end as rating_weight,
         case
             when coalesce(tp.playCount, 0) = 0 then 1.30
@@ -142,7 +143,7 @@ base_eligible as (
         -- Sinterklaas is only eligible on Dec 5.
         and (
             s.sinterklaas_share > 0
-            or (coalesce(gf.is_sinterklaas, 0) = 0 and coalesce(gf.is_sinterklaar, 0) = 0)
+            or coalesce(gf.is_sinterklaas, 0) = 0
         )
 
 ),
@@ -155,9 +156,9 @@ eligible as (
         case
             when is_sinterklaas = 1 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 86400)
             when is_christmas = 1 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 86400)
+            when is_fout = 1 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 3456000)
+            when is_oldies = 1 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 1209600)
             when category = 'Hits' then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 18000)
-            when category = 'Oldies' then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 31536000)
-            when category = 'Fout' then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 7776000)
             else last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 86400)
         end
 ),
@@ -187,11 +188,8 @@ category_targets as (
         case ct.category
             when 'Sinterklaas' then s.sinterklaas_share
             when 'Christmas'   then s.christmas_share
-            when 'Hits'        then max(0.0, 1.0 - s.sinterklaas_share - s.christmas_share) * 0.250
-            when 'Oldies'      then max(0.0, 1.0 - s.sinterklaas_share - s.christmas_share) * 0.030
-            when 'Party'       then max(0.0, 1.0 - s.sinterklaas_share - s.christmas_share) * 0.050
-            when 'Fout'        then max(0.0, 1.0 - s.sinterklaas_share - s.christmas_share) * 0.003
-            else                    max(0.0, 1.0 - s.sinterklaas_share - s.christmas_share) * 0.667
+            when 'Hits'        then max(0.0, 1.0 - s.sinterklaas_share - s.christmas_share) * 0.350
+            else                    max(0.0, 1.0 - s.sinterklaas_share - s.christmas_share) * 0.650
         end as target_share
     from category_totals ct
     cross join settings s
@@ -206,11 +204,8 @@ weighted as (
         e.*,
         case
             when sc.active_target_share > 0 then ct.target_share / sc.active_target_share
-            when e.category = 'Hits'   then 0.250
-            when e.category = 'Oldies' then 0.030
-            when e.category = 'Party'  then 0.050
-            when e.category = 'Fout'   then 0.003
-            else                            0.667
+            when e.category = 'Hits'   then 0.350
+            else                            0.650
         end as category_share,
         ct.total_selection_weight
     from eligible_pool e

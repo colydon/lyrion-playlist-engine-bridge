@@ -42,11 +42,9 @@ SINTERKLAAS SCHEDULE (local LMS time)
 - all other days: 0%
 
 NORMAL MIX TARGET
-- Hits: 25%
-- Oldies: 10%
-- Party: 5%
-- Fout: 0.3%
-- Other: 59.7%
+- Hits: 35%
+- Other: 65%
+- Oldies, Party and Fout are no longer explicit target buckets in DagMix
 
 RATING
 - < 2 stars: excluded
@@ -61,8 +59,8 @@ RATING
 
 COOLDOWN
 - Hits: 5 hours
-- Oldies: 365 days
-- Fout: 90 days
+- Oldies: 14 days
+- Fout: 40 days
 - Sinterklaas: 24 hours
 - Christmas: 24 hours
 - Other: 24 hours
@@ -112,6 +110,18 @@ To add another managed playlist later:
 - add it under "playlists" in playlist_engine_config.example.json
 - restart the engine
 - it will become available to both Homey and the LMS bridge
+
+TIME-ROUTED PLAYLISTS
+The engine can also expose one logical playlist that switches source SQL by
+local time during queue top-ups. The example config now includes:
+
+- DagAvondMix
+    - 07:00-18:00: DagMix
+    - 18:00-07:00: AvondMix
+
+Because Kerst and Sinterklaas already live in the SQL, those seasonal changes
+still switch automatically at the right date boundaries inside the selected
+day or evening profile.
 
 DIRECT RUNNER ALTERNATIVE
 If DynamicPlaylists4 keeps failing even though DagMix.sql returns rows, use the
