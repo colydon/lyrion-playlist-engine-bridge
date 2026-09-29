@@ -503,9 +503,13 @@ class TrackSelector:
                 t.title,
                 t.url,
                 t.secs,
+                coalesce(t.bpm, 0) as bpm,
                 t.primary_artist as primary_artist_id,
                 coalesce(pa.name, '') as primary_artist_name,
                 coalesce(tp.rating, 0) as rating,
+                max(case when lower(ctta.attr) = 'tempo' then 1 else 0 end) as tempo_has_tag,
+                max(case when lower(ctta.attr) = 'tempo' and lower(trim(ctta.value)) = 'fast' then 1 else 0 end) as tempo_is_fast,
+                max(case when lower(ctta.attr) = 'tempo' and lower(trim(ctta.value)) = 'very fast' then 1 else 0 end) as tempo_is_very_fast,
                 group_concat(distinct g.name) as genres,
                 group_concat(distinct ct.contributor) as contributor_ids,
                 group_concat(distinct ca.name) as contributor_names
@@ -516,8 +520,9 @@ class TrackSelector:
             left join genres g on g.id = gt.genre
             left join contributor_track ct on ct.track = t.id
             left join contributors ca on ca.id = ct.contributor
+            left join customtagimporter_track_attributes ctta on ctta.track = t.id
             where t.id in ({placeholders})
-            group by t.id, t.title, t.url, t.secs, t.primary_artist, pa.name, tp.rating
+            group by t.id, t.title, t.url, t.secs, t.bpm, t.primary_artist, pa.name, tp.rating
             """,
             [int(track_id) for track_id in track_ids],
         ).fetchall()
@@ -569,7 +574,11 @@ class TrackSelector:
                 "title": row["title"],
                 "url": row["url"],
                 "secs": row["secs"],
+                "bpm": int(row["bpm"] or 0),
                 "rating": int(row["rating"] or 0),
+                "tempo_has_tag": bool(int(row["tempo_has_tag"] or 0)),
+                "tempo_is_fast": bool(int(row["tempo_is_fast"] or 0)),
+                "tempo_is_very_fast": bool(int(row["tempo_is_very_fast"] or 0)),
                 "genres": genres,
                 "artist_ids": artist_ids,
                 "artists": artist_names,
@@ -595,6 +604,24 @@ class TrackSelector:
                     return False
                 if rating < minimum_rating:
                     return False
+
+        return True
+
+    @staticmethod
+    def _passes_playlist_tempo_rules(resolved_playlist_id: str, track: Dict[str, Any]) -> bool:
+        tempo_has_tag = bool(track.get("tempo_has_tag", False))
+        tempo_is_fast = bool(track.get("tempo_is_fast", False))
+        tempo_is_very_fast = bool(track.get("tempo_is_very_fast", False))
+        bpm = int(track.get("bpm", 0) or 0)
+
+        if resolved_playlist_id == "DagMix" and tempo_is_very_fast:
+            return False
+
+        if resolved_playlist_id == "AvondMix":
+            if tempo_is_fast or tempo_is_very_fast:
+                return False
+            if not tempo_has_tag and bpm >= 135:
+                return False
 
         return True
 
@@ -644,6 +671,7 @@ class TrackSelector:
             return None
 
         playlist = self.config.resolve_playlist_definition(playlist_name)
+        resolved_playlist_id = playlist.identifier
         sql_text = playlist.sql_path.read_text(encoding="utf-8")
         history_ids = set(self.state_store.history_for_player(player_id, playlist_name))
         current_ids = {int(track_id) for track_id in current_queue_ids}
@@ -663,6 +691,8 @@ class TrackSelector:
                     continue
                 if not self._passes_skip_rules(track):
                     continue
+                if not self._passes_playlist_tempo_rules(resolved_playlist_id, track):
+                    continue
                 if self._has_genre(track, preferred_genre):
                     return track
 
@@ -670,6 +700,7 @@ class TrackSelector:
 
     def choose_tracks(self, playlist_name: str, player_id: str, desired_count: int, current_queue_ids: Sequence[int]) -> List[Dict[str, Any]]:
         playlist = self.config.resolve_playlist_definition(playlist_name)
+        resolved_playlist_id = playlist.identifier
         sql_text = playlist.sql_path.read_text(encoding="utf-8")
         history_track_ids = self.state_store.history_for_player(player_id, playlist_name)
         history_ids = set(history_track_ids)
@@ -685,15 +716,7 @@ class TrackSelector:
             recent_tracks_seed = [recent_history_metadata[track_id] for track_id in recent_history_ids if track_id in recent_history_metadata]
             recent_tracks_seed.extend(self._recent_queue_tracks(connection, current_queue_ids))
 
-            for allow_artist_repeats in ([False, True] if self.config.artist_repeat_window_tracks > 0 else [True]):
-                if allow_artist_repeats and self.config.artist_repeat_window_tracks > 0 and len(selected) < desired_count:
-                    LOGGER.info(
-                        "Relaxing the %s-track artist spacing rule for %s/%s because too few candidates remained.",
-                        self.config.artist_repeat_window_tracks,
-                        player_id,
-                        playlist_name,
-                    )
-
+            for allow_artist_repeats in [False]:
                 attempts = 0
                 recent_tracks = list(recent_tracks_seed) + list(selected)
                 while len(selected) < desired_count and attempts < 4:
@@ -730,6 +753,8 @@ class TrackSelector:
                         if not track:
                             continue
                         if not self._passes_skip_rules(track):
+                            continue
+                        if not self._passes_playlist_tempo_rules(resolved_playlist_id, track):
                             continue
                         if not allow_artist_repeats and self._shares_recent_artist(track, recent_tracks):
                             artist_blocked_count += 1
