@@ -22,7 +22,10 @@
     "artist_repeat_window_tracks": 30,
     "player_recovery_enabled": true,
     "player_recovery_grace_seconds": 45,
-    "player_recovery_cooldown_seconds": 120
+    "player_recovery_cooldown_seconds": 120,
+    "queue_pruning_enabled": true,
+    "queue_prune_keep_played_tracks": 2,
+    "queue_prune_min_tracks": 10
   },
   "playlists": {
     "DagMix": {

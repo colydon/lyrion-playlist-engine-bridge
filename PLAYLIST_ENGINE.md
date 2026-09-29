@@ -66,6 +66,9 @@ Managed-session recovery is controlled by these engine settings:
 - `player_recovery_enabled`: keep sessions alive and try to recover after unintended player-side failures
 - `player_recovery_grace_seconds`: wait before rebuilding an unexpectedly empty queue
 - `player_recovery_cooldown_seconds`: minimum time between recovery attempts for the same player
+- `queue_pruning_enabled`: remove already played queue entries during normal playback maintenance
+- `queue_prune_keep_played_tracks`: how many played items to keep behind the current track
+- `queue_prune_min_tracks`: minimum number of removable played items before pruning runs
 
 **2. Run The Engine**
 Run the service on the LMS host itself, or on a machine that has filesystem access to the LMS databases:

@@ -116,6 +116,9 @@ class EngineConfig:
     player_recovery_enabled: bool
     player_recovery_grace_seconds: int
     player_recovery_cooldown_seconds: int
+    queue_pruning_enabled: bool
+    queue_prune_keep_played_tracks: int
+    queue_prune_min_tracks: int
     auto_discover_playlists: bool
     skip_rules: List[Dict[str, Any]]
     playlists: Dict[str, PlaylistDefinition]
@@ -133,6 +136,9 @@ class EngineConfig:
         default_initial_count = int(engine.get("default_initial_count", 20))
         default_topup_count = int(engine.get("default_topup_count", 10))
         default_low_watermark = int(engine.get("default_low_watermark", 5))
+        queue_pruning_enabled = bool(engine.get("queue_pruning_enabled", True))
+        queue_prune_keep_played_tracks = max(0, int(engine.get("queue_prune_keep_played_tracks", 2)))
+        queue_prune_min_tracks = max(1, int(engine.get("queue_prune_min_tracks", 10)))
         playlist_overrides = dict(raw.get("playlist_overrides", {}))
         configured_playlists = dict(raw.get("playlists", {}))
         auto_discover_playlists = bool(engine.get("auto_discover_playlists", True))
@@ -198,6 +204,9 @@ class EngineConfig:
             player_recovery_enabled=bool(engine.get("player_recovery_enabled", True)),
             player_recovery_grace_seconds=max(5, int(engine.get("player_recovery_grace_seconds", 45))),
             player_recovery_cooldown_seconds=max(10, int(engine.get("player_recovery_cooldown_seconds", 120))),
+            queue_pruning_enabled=queue_pruning_enabled,
+            queue_prune_keep_played_tracks=queue_prune_keep_played_tracks,
+            queue_prune_min_tracks=queue_prune_min_tracks,
             auto_discover_playlists=auto_discover_playlists,
             skip_rules=list(raw.get("skip_rules", [])),
             playlists=playlist_catalog,
@@ -435,6 +444,9 @@ class LmsClient:
 
     def add_track(self, player_id: str, track_id: int) -> None:
         self._request(player_id, ["playlist", "addtracks", f"track.id={track_id}"])
+
+    def delete_track_at_index(self, player_id: str, index: int) -> None:
+        self._request(player_id, ["playlist", "delete", max(0, int(index))])
 
     def play(self, player_id: str) -> None:
         self._request(player_id, ["play"])
@@ -765,6 +777,25 @@ class SessionManager:
         self._last_recovery_attempt_at[player_id] = now
         return True
 
+    def _prune_played_queue_entries(self, player_id: str, current_index: int) -> int:
+        if not self.config.queue_pruning_enabled:
+            return 0
+
+        removable_count = max(current_index - self.config.queue_prune_keep_played_tracks, 0)
+        if removable_count < self.config.queue_prune_min_tracks:
+            return 0
+
+        for _ in range(removable_count):
+            self.lms.delete_track_at_index(player_id, 0)
+
+        LOGGER.info(
+            "Pruned %s played queue entries for %s; kept %s played tracks behind the current item.",
+            removable_count,
+            player_id,
+            self.config.queue_prune_keep_played_tracks,
+        )
+        return removable_count
+
     def _build_session_tracks(
         self,
         session: Dict[str, Any],
@@ -911,6 +942,7 @@ class SessionManager:
                     LOGGER.info("Resuming managed session monitoring for %s after the player returned to play.", player_id)
                 self._manual_suspend_reason.pop(player_id, None)
                 self._recover_after_disconnect.pop(player_id, None)
+                self._prune_played_queue_entries(player_id, current_index)
             elif mode in {"pause", "stop"}:
                 continue
 
