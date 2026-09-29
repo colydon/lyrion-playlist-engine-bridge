@@ -63,6 +63,9 @@ If `engine.auto_discover_playlists` is `true`, extra `.sql` files in the playlis
 
 Managed-session recovery is controlled by these engine settings:
 
+- `stalled_playback_detection_enabled`: detect players that remain in `play` but stop making real time progress
+- `stalled_playback_grace_seconds`: how long that stalled state may persist before recovery runs
+- `stalled_playback_progress_tolerance_seconds`: how much playback-time drift still counts as healthy progress
 - `player_recovery_enabled`: keep sessions alive and try to recover after unintended player-side failures
 - `player_recovery_grace_seconds`: wait before rebuilding an unexpectedly empty queue
 - `player_recovery_cooldown_seconds`: minimum time between recovery attempts for the same player
@@ -97,6 +100,7 @@ GET http://<engine-host>:8787/api/players?token=<token>
 
 Recovery behavior:
 
+- if a player remains in `play` but the reported playback time stops advancing for too long, the engine can reopen the current queue entry to kick CastBridge/Chromecast back into playback
 - if a managed player disconnects and later reconnects, the engine can resume playback or rebuild the queue
 - if a managed queue disappears unexpectedly, the engine can rebuild it after the configured grace period
 - if a user pauses or stops the player and the queue is still intact, the engine keeps the session suspended and does not auto-restart

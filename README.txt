@@ -86,6 +86,7 @@ parts of DynamicPlaylists4/DynamicMix with a dedicated service that:
 - starts a playlist on any LMS player
 - keeps adding suitable tracks when the queue runs low
 - can keep a managed player session alive through reconnects or an unexpectedly empty queue
+- can reopen the current queue item when a managed player stays in play mode but playback time stops advancing
 - does not auto-restart when a user has paused or stopped a player that still has its queue
 - exposes a webhook API for Homey or other automation
 - keeps skip rules adjustable in JSON instead of hardwiring them into plugins

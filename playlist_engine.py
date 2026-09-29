@@ -116,6 +116,9 @@ class EngineConfig:
     player_recovery_enabled: bool
     player_recovery_grace_seconds: int
     player_recovery_cooldown_seconds: int
+    stalled_playback_detection_enabled: bool
+    stalled_playback_grace_seconds: int
+    stalled_playback_progress_tolerance_seconds: float
     queue_pruning_enabled: bool
     queue_prune_keep_played_tracks: int
     queue_prune_min_tracks: int
@@ -136,6 +139,12 @@ class EngineConfig:
         default_initial_count = int(engine.get("default_initial_count", 20))
         default_topup_count = int(engine.get("default_topup_count", 10))
         default_low_watermark = int(engine.get("default_low_watermark", 5))
+        stalled_playback_detection_enabled = bool(engine.get("stalled_playback_detection_enabled", True))
+        stalled_playback_grace_seconds = max(15, int(engine.get("stalled_playback_grace_seconds", 45)))
+        stalled_playback_progress_tolerance_seconds = max(
+            0.0,
+            float(engine.get("stalled_playback_progress_tolerance_seconds", 2.5)),
+        )
         queue_pruning_enabled = bool(engine.get("queue_pruning_enabled", True))
         queue_prune_keep_played_tracks = max(0, int(engine.get("queue_prune_keep_played_tracks", 2)))
         queue_prune_min_tracks = max(1, int(engine.get("queue_prune_min_tracks", 10)))
@@ -204,6 +213,9 @@ class EngineConfig:
             player_recovery_enabled=bool(engine.get("player_recovery_enabled", True)),
             player_recovery_grace_seconds=max(5, int(engine.get("player_recovery_grace_seconds", 45))),
             player_recovery_cooldown_seconds=max(10, int(engine.get("player_recovery_cooldown_seconds", 120))),
+            stalled_playback_detection_enabled=stalled_playback_detection_enabled,
+            stalled_playback_grace_seconds=stalled_playback_grace_seconds,
+            stalled_playback_progress_tolerance_seconds=stalled_playback_progress_tolerance_seconds,
             queue_pruning_enabled=queue_pruning_enabled,
             queue_prune_keep_played_tracks=queue_prune_keep_played_tracks,
             queue_prune_min_tracks=queue_prune_min_tracks,
@@ -444,6 +456,9 @@ class LmsClient:
 
     def add_track(self, player_id: str, track_id: int) -> None:
         self._request(player_id, ["playlist", "addtracks", f"track.id={track_id}"])
+
+    def play_index(self, player_id: str, index: int) -> None:
+        self._request(player_id, ["playlist", "index", max(0, int(index))])
 
     def delete_track_at_index(self, player_id: str, index: int) -> None:
         self._request(player_id, ["playlist", "delete", max(0, int(index))])
@@ -751,6 +766,7 @@ class SessionManager:
         self._manual_suspend_reason: Dict[str, str] = {}
         self._recover_after_disconnect: Dict[str, float] = {}
         self._last_recovery_attempt_at: Dict[str, float] = {}
+        self._playback_progress_state: Dict[str, Dict[str, float]] = {}
 
     def start_background_loop(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -769,6 +785,7 @@ class SessionManager:
         self._manual_suspend_reason.pop(player_id, None)
         self._recover_after_disconnect.pop(player_id, None)
         self._last_recovery_attempt_at.pop(player_id, None)
+        self._playback_progress_state.pop(player_id, None)
 
     def _can_attempt_recovery(self, player_id: str, now: float) -> bool:
         last_attempt_at = self._last_recovery_attempt_at.get(player_id, 0.0)
@@ -795,6 +812,79 @@ class SessionManager:
             self.config.queue_prune_keep_played_tracks,
         )
         return removable_count
+
+    def _clear_playback_progress_state(self, player_id: str) -> None:
+        self._playback_progress_state.pop(player_id, None)
+
+    def _recover_stalled_playback(self, player_id: str, current_index: int, playback_time: float) -> None:
+        LOGGER.warning(
+            "Detected stalled playback for %s at queue index %s and time %.2fs; reopening the current track.",
+            player_id,
+            current_index,
+            playback_time,
+        )
+        self.lms.play_index(player_id, current_index)
+        self._clear_playback_progress_state(player_id)
+
+    def _handle_playback_progress(
+        self,
+        player_id: str,
+        now: float,
+        mode: str,
+        connected: int,
+        queue_intact: bool,
+        current_index: int,
+        playback_time: float,
+    ) -> None:
+        if not self.config.stalled_playback_detection_enabled:
+            self._clear_playback_progress_state(player_id)
+            return
+
+        if mode != "play" or connected == 0 or not queue_intact:
+            self._clear_playback_progress_state(player_id)
+            return
+
+        state = self._playback_progress_state.get(player_id)
+        if not state:
+            self._playback_progress_state[player_id] = {
+                "observed_at": now,
+                "current_index": float(current_index),
+                "playback_time": playback_time,
+                "stalled_since": now,
+            }
+            return
+
+        previous_index = int(state.get("current_index", -1))
+        previous_time = float(state.get("playback_time", 0.0))
+        previous_observed_at = float(state.get("observed_at", now))
+        stalled_since = float(state.get("stalled_since", now))
+        elapsed_wall = max(now - previous_observed_at, 0.0)
+        elapsed_playback = playback_time - previous_time
+
+        if current_index != previous_index or elapsed_playback > self.config.stalled_playback_progress_tolerance_seconds:
+            stalled_since = now
+        elif elapsed_playback < -1.0:
+            stalled_since = now
+
+        state.update(
+            {
+                "observed_at": now,
+                "current_index": float(current_index),
+                "playback_time": playback_time,
+                "stalled_since": stalled_since,
+            }
+        )
+
+        if elapsed_wall < max(self.config.poll_interval_seconds - 1, 1):
+            return
+
+        if now - stalled_since < self.config.stalled_playback_grace_seconds:
+            return
+
+        if not self._can_attempt_recovery(player_id, now):
+            return
+
+        self._recover_stalled_playback(player_id, current_index, playback_time)
 
     def _build_session_tracks(
         self,
@@ -874,11 +964,13 @@ class SessionManager:
 
             queue_ids = [int(item["id"]) for item in status.get("playlist_loop", []) if str(item.get("id", "")).isdigit()]
             current_index = int(status.get("playlist_cur_index") or 0)
+            playback_time = float(status.get("time") or 0.0)
             total_tracks = max(int(status.get("playlist_tracks") or 0), len(queue_ids))
             remaining = max(total_tracks - current_index - 1, 0)
             queue_intact = total_tracks > 0 or bool(queue_ids)
 
             if connected == 0:
+                self._clear_playback_progress_state(player_id)
                 if player_id not in self._disconnected_since:
                     LOGGER.warning("Player %s disconnected; keeping the managed session active for recovery.", player_id)
                     self._disconnected_since[player_id] = now
@@ -891,6 +983,7 @@ class SessionManager:
                 LOGGER.info("Player %s reconnected after %.0fs; evaluating managed session recovery.", player_id, now - disconnected_at)
 
             if power == 0:
+                self._clear_playback_progress_state(player_id)
                 if self._manual_suspend_reason.get(player_id) != "power_off":
                     LOGGER.info("Keeping managed session for %s idle because the player power is off.", player_id)
                 self._manual_suspend_reason[player_id] = "power_off"
@@ -900,6 +993,7 @@ class SessionManager:
             recovered_after_disconnect = player_id in self._recover_after_disconnect
 
             if mode in {"pause", "stop"} and queue_intact and not recovered_after_disconnect:
+                self._clear_playback_progress_state(player_id)
                 suspend_reason = f"{mode}_with_queue"
                 if self._manual_suspend_reason.get(player_id) != suspend_reason:
                     LOGGER.info(
@@ -912,12 +1006,14 @@ class SessionManager:
                 continue
 
             if recovered_after_disconnect and queue_intact and mode != "play":
+                self._clear_playback_progress_state(player_id)
                 if self.config.player_recovery_enabled and self._can_attempt_recovery(player_id, now):
                     LOGGER.info("Resuming playback for %s after reconnect because the managed queue is still intact.", player_id)
                     self.lms.play(player_id)
                 continue
 
             if not queue_intact:
+                self._clear_playback_progress_state(player_id)
                 if player_id in self._manual_suspend_reason and not recovered_after_disconnect:
                     LOGGER.info("Stopping managed session for %s because a manually suspended queue was cleared.", player_id)
                     self.state_store.stop_session(player_id)
@@ -942,8 +1038,10 @@ class SessionManager:
                     LOGGER.info("Resuming managed session monitoring for %s after the player returned to play.", player_id)
                 self._manual_suspend_reason.pop(player_id, None)
                 self._recover_after_disconnect.pop(player_id, None)
+                self._handle_playback_progress(player_id, now, mode, connected, queue_intact, current_index, playback_time)
                 self._prune_played_queue_entries(player_id, current_index)
             elif mode in {"pause", "stop"}:
+                self._clear_playback_progress_state(player_id)
                 continue
 
             if remaining > int(session["low_watermark"]):
