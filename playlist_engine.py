@@ -621,6 +621,18 @@ class TrackSelector:
                 return True
         return False
 
+    def _recent_queue_tracks(self, connection: sqlite3.Connection, current_queue_ids: Sequence[int]) -> List[Dict[str, Any]]:
+        artist_window = self.config.artist_repeat_window_tracks
+        if artist_window <= 0 or not current_queue_ids:
+            return []
+
+        queue_tail_ids = [int(track_id) for track_id in current_queue_ids[-artist_window:] if str(track_id).isdigit()]
+        if not queue_tail_ids:
+            return []
+
+        queue_metadata = self._fetch_metadata(connection, queue_tail_ids)
+        return [queue_metadata[track_id] for track_id in queue_tail_ids if track_id in queue_metadata]
+
     def choose_start_track(
         self,
         playlist_name: str,
@@ -671,6 +683,7 @@ class TrackSelector:
             recent_history_ids = history_track_ids[-self.config.artist_repeat_window_tracks :] if self.config.artist_repeat_window_tracks > 0 else []
             recent_history_metadata = self._fetch_metadata(connection, recent_history_ids)
             recent_tracks_seed = [recent_history_metadata[track_id] for track_id in recent_history_ids if track_id in recent_history_metadata]
+            recent_tracks_seed.extend(self._recent_queue_tracks(connection, current_queue_ids))
 
             for allow_artist_repeats in ([False, True] if self.config.artist_repeat_window_tracks > 0 else [True]):
                 if allow_artist_repeats and self.config.artist_repeat_window_tracks > 0 and len(selected) < desired_count:
@@ -968,6 +981,7 @@ class SessionManager:
             total_tracks = max(int(status.get("playlist_tracks") or 0), len(queue_ids))
             remaining = max(total_tracks - current_index - 1, 0)
             queue_intact = total_tracks > 0 or bool(queue_ids)
+            queued_from_current = queue_ids[current_index:] if 0 <= current_index < len(queue_ids) else queue_ids
 
             if connected == 0:
                 self._clear_playback_progress_state(player_id)
@@ -1051,7 +1065,7 @@ class SessionManager:
                 playlist_name=session["playlist_name"],
                 player_id=player_id,
                 desired_count=int(session["topup_count"]),
-                current_queue_ids=queue_ids,
+                current_queue_ids=queued_from_current,
             )
             if not tracks:
                 LOGGER.warning("No top-up tracks found for %s on %s", session["playlist_name"], player_id)
@@ -1120,7 +1134,9 @@ class SessionManager:
         player = self.lms.resolve_player(player_name, player_id)
         status = self.lms.status(player["playerid"])
         queue_ids = [int(item["id"]) for item in status.get("playlist_loop", []) if str(item.get("id", "")).isdigit()]
-        tracks = self.selector.choose_tracks(playlist_name, player["playerid"], count, queue_ids)
+        current_index = int(status.get("playlist_cur_index") or 0)
+        queued_from_current = queue_ids[current_index:] if 0 <= current_index < len(queue_ids) else queue_ids
+        tracks = self.selector.choose_tracks(playlist_name, player["playerid"], count, queued_from_current)
         return {
             "player_id": player["playerid"],
             "player_name": player["name"],
