@@ -564,7 +564,9 @@ class TrackSelector:
                 minimum_stars = float(rule.get("value", 0))
                 minimum_rating = int(minimum_stars * 20)
                 rating = int(track.get("rating", 0) or 0)
-                if rating > 0 and rating < minimum_rating:
+                if minimum_rating > 0 and rating <= 0:
+                    return False
+                if rating < minimum_rating:
                     return False
 
         return True

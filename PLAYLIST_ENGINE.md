@@ -18,6 +18,7 @@ The LMS bridge lives in [lms_plugin/PlaylistEngineBridge/Plugin.pm](c:/Users/ric
 - Managed sessions now stay attached to the player through brief disconnects and empty-queue failures.
 - Manual `pause` or `stop` with a queue still present does not auto-restart playback.
 - LMS can show a `Custom Playlists` menu and start playback on the player currently selected in LMS.
+- The LMS bridge can also expose one direct home-page quick-start button for a fixed playlist such as `DagAvondMix`.
 
 **1. Configure The Engine**
 Copy [playlist_engine_config.example.json](c:/Users/rickl/Desktop/cti_dagmix_v3/playlist_engine_config.example.json) to your real config file and adjust at least:
@@ -191,9 +192,10 @@ Behavior:
 1. Copy [lms_plugin/PlaylistEngineBridge](c:/Users/rickl/Desktop/cti_dagmix_v3/lms_plugin/PlaylistEngineBridge) to your LMS custom plugin directory.
 2. Copy [lms_plugin/PlaylistEngineBridge/bridge_config.example.json](c:/Users/rickl/Desktop/cti_dagmix_v3/lms_plugin/PlaylistEngineBridge/bridge_config.example.json) to `bridge_config.json` in that same plugin folder.
 3. Set `engine_base_url` and `api_token` in `bridge_config.json`.
-4. Restart LMS.
-5. Enable the plugin if LMS shows it in the plugin list.
-6. Select a player in LMS and open `Custom Playlists`.
+4. Optionally set `quick_launch_playlist`, for example `DagAvondMix`, to add a direct start button on the LMS home page.
+5. Restart LMS.
+6. Enable the plugin if LMS shows it in the plugin list.
+7. Select a player in LMS and open `Custom Playlists`.
 
 Because the selected LMS player is passed as `player_id`, you do not need separate menu trees per player.
 

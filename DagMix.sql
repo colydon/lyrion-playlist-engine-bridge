@@ -11,7 +11,7 @@
 -- DagMix does not rely on PlaylistTrackMinDuration or PlaylistLimit token
 -- replacement, because this LMS/DPL combination does not replace them
 -- reliably inside the main query.
--- No Tempo dependency yet.
+-- Uses TEMPO only to exclude tracks tagged as Very Fast.
 --
 -- Sinterklaas schedule (local LMS time):
 -- Dec 5 only: 33% Sinterklaas
@@ -74,6 +74,18 @@ genre_flags as (
     join genres g on g.id = gt.genre
     group by gt.track
 ),
+tempo_flags as (
+    select
+        track,
+        max(
+            case
+                when lower(attr) = 'tempo' and lower(value) = 'very fast' then 1
+                else 0
+            end
+        ) as is_very_fast
+    from customtagimporter_track_attributes
+    group by track
+),
 base_eligible as (
     select
         t.id,
@@ -118,18 +130,22 @@ base_eligible as (
     left join tracks_persistent tp on tp.urlmd5 = t.urlmd5
     left join contributors pa on pa.id = t.primary_artist
     left join genre_flags gf on gf.track = t.id
+    left join tempo_flags tf on tf.track = t.id
     left join dynamicplaylist_history dph on dph.id = t.id and dph.client = 'PlaylistPlayer'
     cross join settings s
     where
         t.audio = 1
         and t.secs >= 90
 
-        -- Respect stored star ratings, but keep unrated tracks eligible.
-        and (tp.rating is null or tp.rating = 0 or tp.rating >= 40)
+        -- Automatic playback requires a stored rating of at least 2 stars.
+        and tp.rating >= 40
 
         -- Permanent Custom Skip exclusions are also excluded here so DPL
         -- does not spend selection attempts on tracks that will be skipped.
         and coalesce(gf.is_permanent_exclusion, 0) = 0
+
+        -- DagMix should never auto-pick tracks explicitly tagged as Very Fast.
+        and coalesce(tf.is_very_fast, 0) = 0
 
         -- Avoid repeating tracks already added to the active DagMix session.
         and dph.id is null

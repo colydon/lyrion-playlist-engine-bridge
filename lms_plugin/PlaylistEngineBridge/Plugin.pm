@@ -9,6 +9,7 @@ use File::Basename qw(dirname);
 use File::Spec::Functions qw(catfile);
 use HTTP::Tiny;
 use JSON::PP qw(decode_json encode_json);
+use URI::Escape qw(uri_escape_utf8);
 use Slim::Control::Jive;
 use Slim::Control::Request;
 use Slim::Web::HTTP;
@@ -25,6 +26,8 @@ my %DEFAULT_CONFIG = (
 	engine_base_url => 'http://127.0.0.1:8787',
 	api_token       => '',
 	menu_title      => 'Custom Playlists',
+	quick_launch_playlist => '',
+	quick_launch_title    => '',
 );
 
 
@@ -37,21 +40,64 @@ sub initPlugin {
 	my $class = shift;
 
 	my $config = _load_config();
-	my @menuItems = (
-		{
-			text   => $config->{menu_title},
-			weight => 79,
-			id     => 'playlistenginebridge',
+	my $quick_launch_playlist = $config->{quick_launch_playlist} || '';
+	my $quick_launch_title = $config->{quick_launch_title} || ($quick_launch_playlist ? 'Start ' . $quick_launch_playlist : '');
+	my $browse_item = {
+		text   => $config->{menu_title},
+		weight => 79,
+		id     => 'playlistenginebridge',
+		window => { titleStyle => 'mymusic' },
+		actions => {
+			go => {
+				cmd => ['playlistenginebridge', 'browse'],
+			},
+		},
+	};
+
+	if ($quick_launch_playlist) {
+		my $quick_launch_item = {
+			text   => $quick_launch_title,
+			weight => 78,
+			id     => 'playlistenginebridge_quickstart_mymusic',
 			window => { titleStyle => 'mymusic' },
 			actions => {
 				go => {
-					cmd => ['playlistenginebridge', 'browse'],
+					player => 0,
+					cmd    => ['playlistenginebridge', 'start'],
+					params => {
+						playlist => $quick_launch_playlist,
+					},
 				},
 			},
-		},
-	);
+		};
 
-	Slim::Control::Jive::registerPluginMenu(\@menuItems, 'myMusic');
+		Slim::Control::Jive::registerPluginMenu([$quick_launch_item], 'myMusic');
+	}
+
+	if ($quick_launch_playlist) {
+		my @homeItems = (
+			{
+				text   => $quick_launch_title,
+				weight => 15,
+				id     => 'playlistenginebridge_quickstart',
+				window => { titleStyle => 'hm_myMusic' },
+				actions => {
+					go => {
+						player => 0,
+						cmd    => ['playlistenginebridge', 'start'],
+						params => {
+							playlist => $quick_launch_playlist,
+						},
+					},
+				},
+			},
+		);
+
+		Slim::Control::Jive::registerPluginMenu(\@homeItems, 'home');
+		_register_material_home_extra($quick_launch_playlist, $quick_launch_title);
+	}
+
+	Slim::Control::Jive::registerPluginMenu([$browse_item], 'myMusic');
 	Slim::Control::Request::addDispatch(['playlistenginebridge', 'browse'], [1, 0, 1, \&cliBrowseHandler]);
 	Slim::Control::Request::addDispatch(['playlistenginebridge', 'start'], [1, 1, 1, \&cliStartHandler]);
 	Slim::Control::Request::addDispatch(['playlistenginebridge', 'stop'], [1, 0, 1, \&cliStopHandler]);
@@ -62,8 +108,53 @@ sub initPlugin {
 
 sub webPages {
 	my $class = shift;
+	my $config = _load_config();
 	Slim::Web::Pages->addPageFunction('playlistenginebridge_list\.html', \&handleWebList);
 	Slim::Web::Pages->addPageLinks('browse', { 'Custom Playlists' => 'plugins/PlaylistEngineBridge/playlistenginebridge_list.html' });
+
+	if ($config->{quick_launch_playlist}) {
+		my $title = $config->{quick_launch_title} || ('Start ' . $config->{quick_launch_playlist});
+		my $target = 'plugins/PlaylistEngineBridge/playlistenginebridge_list.html?action=start&playlist=' . uri_escape_utf8($config->{quick_launch_playlist});
+		Slim::Web::Pages->addPageLinks('home', { $title => $target });
+		Slim::Web::Pages->addPageLinks('browse', { $title => $target });
+	}
+}
+
+
+sub _register_material_home_extra {
+	my ($playlist, $title) = @_;
+
+	return unless $playlist;
+	return unless eval { require Plugins::MaterialSkin::Plugin; 1 };
+	return unless Plugins::MaterialSkin::Plugin->can('registerHomeExtra');
+
+	Plugins::MaterialSkin::Plugin->registerHomeExtra('playlistenginebridge_material_quickstart', {
+		title       => $title,
+		subtitle    => 'Custom Playlists',
+		needsPlayer => 1,
+		handler     => sub {
+			my ($client, $callback, $args) = @_;
+
+			my @items = ({
+				text    => $title,
+				style   => 'itemplay',
+				actions => {
+					go => {
+						player => 0,
+						cmd    => ['playlistenginebridge', 'start'],
+						params => {
+							playlist => $playlist,
+						},
+					},
+				},
+			});
+
+			$callback->(\@items);
+		},
+	});
+
+	Plugins::MaterialSkin::Plugin->signalHomeExtraUpdate()
+		if Plugins::MaterialSkin::Plugin->can('signalHomeExtraUpdate');
 }
 
 

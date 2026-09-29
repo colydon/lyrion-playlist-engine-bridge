@@ -48,7 +48,7 @@ NORMAL MIX TARGET
 
 RATING
 - < 2 stars: excluded
-- unrated: allowed with low weight
+- unrated: excluded from automatic playback
 - 5 stars: weight 8
 - 4.5 stars: weight 6
 - 4 stars: weight 4

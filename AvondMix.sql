@@ -23,8 +23,9 @@
 -- Additional AvondMix rules:
 -- - no Party tracks
 -- - no Fout tracks
--- - temporary fallback version without TEMPO or BPM filtering
--- - saved tempo-aware version lives in AvondMix.tempo.sql
+-- - avoid TEMPO Fast and Very Fast when the TEMPO tag is present
+-- - use BPM as a fallback tempo hint when TEMPO is missing
+-- - prefer Slow and lower BPM tracks in the evening
 
 with
 settings as (
@@ -61,6 +62,18 @@ genre_flags as (
     join genres g on g.id = gt.genre
     group by gt.track
 ),
+tempo_flags as (
+    select
+        cta.track,
+        max(case when lower(trim(cta.value)) = 'very slow' then 1 else 0 end) as is_very_slow,
+        max(case when lower(trim(cta.value)) = 'slow' then 1 else 0 end) as is_slow,
+        max(case when lower(trim(cta.value)) = 'moderate' then 1 else 0 end) as is_moderate,
+        max(case when lower(trim(cta.value)) = 'fast' then 1 else 0 end) as is_fast,
+        max(case when lower(trim(cta.value)) = 'very fast' then 1 else 0 end) as is_very_fast
+    from customtagimporter_track_attributes cta
+    where lower(cta.attr) = 'tempo'
+    group by cta.track
+),
 base_eligible as (
     select
         t.id,
@@ -68,8 +81,22 @@ base_eligible as (
         tp.lastPlayed as last_played,
         coalesce(tp.rating, 0) as rating,
         coalesce(tp.playCount, 0) as play_count,
+        coalesce(t.bpm, 0) as bpm,
         s.sinterklaas_share,
         s.christmas_share,
+        case
+            when coalesce(tf.is_slow, 0) = 1 then 'Slow'
+            when coalesce(tf.is_very_slow, 0) = 1 then 'Very Slow'
+            when coalesce(tf.is_moderate, 0) = 1 then 'Moderate'
+            when coalesce(tf.is_fast, 0) = 1 then 'Fast'
+            when coalesce(tf.is_very_fast, 0) = 1 then 'Very Fast'
+            else ''
+        end as tempo_bucket,
+        case
+            when coalesce(tf.is_slow, 0) = 1 or coalesce(tf.is_very_slow, 0) = 1 or coalesce(tf.is_moderate, 0) = 1 or coalesce(tf.is_fast, 0) = 1 or coalesce(tf.is_very_fast, 0) = 1 then 'TEMPO'
+            when coalesce(t.bpm, 0) > 0 then 'BPM'
+            else ''
+        end as tempo_source,
         case
             when coalesce(gf.is_sinterklaas, 0) = 1 then 1
             else 0
@@ -99,21 +126,44 @@ base_eligible as (
             when coalesce(tp.playCount, 0) <= 50 then 0.92
             when coalesce(tp.playCount, 0) <= 100 then 0.84
             else 0.75
-        end as play_count_weight
+        end as play_count_weight,
+        case
+            when coalesce(tf.is_slow, 0) = 1 then 2.40
+            when coalesce(tf.is_very_slow, 0) = 1 then 1.10
+            when coalesce(tf.is_moderate, 0) = 1 then 0.70
+            when coalesce(tf.is_fast, 0) = 1 then 0.08
+            when coalesce(tf.is_very_fast, 0) = 1 then 0.03
+            when coalesce(t.bpm, 0) between 1 and 84 then 1.70
+            when coalesce(t.bpm, 0) between 85 and 99 then 1.35
+            when coalesce(t.bpm, 0) between 100 and 112 then 0.95
+            when coalesce(t.bpm, 0) between 113 and 124 then 0.55
+            when coalesce(t.bpm, 0) >= 125 then 0.18
+            else 0.85
+        end as tempo_weight
     from tracks t
     left join tracks_persistent tp on tp.urlmd5 = t.urlmd5
     left join contributors pa on pa.id = t.primary_artist
     left join genre_flags gf on gf.track = t.id
+    left join tempo_flags tf on tf.track = t.id
     left join dynamicplaylist_history dph on dph.id = t.id and dph.client = 'PlaylistPlayer'
     cross join settings s
     where
         t.audio = 1
         and t.secs >= 90
-        and (tp.rating is null or tp.rating = 0 or tp.rating >= 40)
+        and tp.rating >= 40
         and coalesce(gf.is_permanent_exclusion, 0) = 0
         and dph.id is null
         and coalesce(gf.is_party, 0) = 0
         and coalesce(gf.is_fout, 0) = 0
+        and not (coalesce(tf.is_fast, 0) = 1 or coalesce(tf.is_very_fast, 0) = 1)
+        and not (
+            coalesce(tf.is_slow, 0) = 0
+            and coalesce(tf.is_very_slow, 0) = 0
+            and coalesce(tf.is_moderate, 0) = 0
+            and coalesce(tf.is_fast, 0) = 0
+            and coalesce(tf.is_very_fast, 0) = 0
+            and coalesce(t.bpm, 0) >= 135
+        )
         and (
             s.christmas_share > 0
             or coalesce(gf.is_christmas, 0) = 0
@@ -126,7 +176,7 @@ base_eligible as (
 eligible as (
     select
         *,
-        rating_weight * play_count_weight as selection_weight
+        rating_weight * play_count_weight * tempo_weight as selection_weight
     from base_eligible
     where
         case
@@ -140,12 +190,12 @@ eligible as (
 eligible_pool as (
     select *
     from eligible
-
+        rating_weight * play_count_weight * tempo_weight as selection_weight
     union all
 
     select
         *,
-        rating_weight * play_count_weight as selection_weight
+        rating_weight * play_count_weight * tempo_weight as selection_weight
     from base_eligible
     where not exists (select 1 from eligible)
 ),
