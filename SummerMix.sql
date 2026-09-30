@@ -1,11 +1,27 @@
--- PlaylistName:AvondMix
+-- PlaylistName:SummerMix
 -- PlaylistGroups:Mixen
 -- PlaylistCategory:songs
 -- PlaylistUseCache: 1
 -- PlaylistTrackOrder:ordered
 --
--- AvondMix
--- Rustiger profiel voor de avond.
+-- SummerMix v1
+-- Extra playlist naast de bestaande DagMix / AvondMix / DagAvondMix.
+-- Die bestaande playlists blijven volledig ongewijzigd; deze mix is puur een
+-- aanvulling die alleen gestart wordt wanneer Homey daar expliciet om vraagt
+-- (bijvoorbeeld op een warme dag).
+--
+-- Doel:
+-- - 50% van de nummers komt uit de genres Summer en Lounge samen.
+--   Lounge bevat nog maar weinig tracks, daarom telt die mee in hetzelfde
+--   zomerblok en krijgt een verse track (weinig playcount) extra gewicht.
+-- - Hits 25% en de rest (Other) 25%; beide spelen daardoor minder vaak dan in
+--   DagMix (dat 35% hits en 65% overig gebruikt).
+-- - Overdag: hetzelfde karakter als DagMix, maar dan met de zomerbias.
+-- - Avond (lokaal 18:00-07:00): rustiger. Geen TEMPO Fast of Very Fast meer en
+--   een lagere BPM-voorkeur, terwijl Summer/Lounge net zo belangrijk blijven.
+--
+-- De dag/avond-keuze gebeurt volledig in deze SQL op basis van de lokale tijd,
+-- dus de engine heeft geen routing-windows en geen extra Python-code nodig.
 --
 -- Sinterklaas schedule (local LMS time):
 -- Dec 5 only: 33% Sinterklaas
@@ -17,15 +33,12 @@
 -- Dec 20-26 : 100% Christmas
 -- Dec 27-Nov 30: 0% Christmas
 --
--- Normal mix target:
--- Hits 6.0%, Oldies 18.0%, Other 76.0%
+-- Normal mix target (buiten het seizoen):
+-- Summer+Lounge 50.0%, Hits 25.0%, Other 25.0%
 --
--- Additional AvondMix rules:
--- - no Party tracks
--- - no Fout tracks
--- - avoid TEMPO Fast and Very Fast when the TEMPO tag is present
--- - use BPM as a fallback tempo hint when TEMPO is missing
--- - prefer Slow and lower BPM tracks in the evening
+-- Cooldown:
+-- Hits 5 uur, Summer/Lounge 12 uur, Oldies 14 dagen, Fout 182 dagen,
+-- Sinterklaas/Kerst/Other 24 uur.
 
 with
 settings as (
@@ -39,7 +52,12 @@ settings as (
             when strftime('%m-%d', 'now', 'localtime') between '12-10' and '12-19' then 0.65
             when strftime('%m-%d', 'now', 'localtime') between '12-20' and '12-26' then 1.00
             else 0.00
-        end as christmas_share
+        end as christmas_share,
+        case
+            when cast(strftime('%H', 'now', 'localtime') as integer) >= 18
+              or cast(strftime('%H', 'now', 'localtime') as integer) < 7 then 1
+            else 0
+        end as is_evening
 ),
 genre_flags as (
     select
@@ -48,8 +66,10 @@ genre_flags as (
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',sinterklaas,') > 0 then 1 else 0 end) as is_sinterklaas,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',hits,') > 0 then 1 else 0 end) as is_hit,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',oldies,') > 0 then 1 else 0 end) as is_oldies,
-        max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',party,') > 0 then 1 else 0 end) as is_party,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',fout,') > 0 then 1 else 0 end) as is_fout,
+        max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',summer,') > 0 then 1 else 0 end) as is_summer,
+        max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',zomer,') > 0 then 1 else 0 end) as is_zomer,
+        max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',lounge,') > 0 then 1 else 0 end) as is_lounge,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',live,') > 0 then 1 else 0 end) as is_live,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',karaoke,') > 0 then 1 else 0 end) as is_karaoke,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',kinderliedjes,') > 0 then 1 else 0 end) as is_kinderliedjes,
@@ -81,43 +101,38 @@ base_eligible as (
         tp.lastPlayed as last_played,
         coalesce(tp.rating, 0) as rating,
         coalesce(tp.playCount, 0) as play_count,
-        coalesce(t.bpm, 0) as bpm,
         s.sinterklaas_share,
         s.christmas_share,
-        case
-            when coalesce(tf.is_slow, 0) = 1 then 'Slow'
-            when coalesce(tf.is_very_slow, 0) = 1 then 'Very Slow'
-            when coalesce(tf.is_moderate, 0) = 1 then 'Moderate'
-            when coalesce(tf.is_fast, 0) = 1 then 'Fast'
-            when coalesce(tf.is_very_fast, 0) = 1 then 'Very Fast'
-            else ''
-        end as tempo_bucket,
-        case
-            when coalesce(tf.is_slow, 0) = 1 or coalesce(tf.is_very_slow, 0) = 1 or coalesce(tf.is_moderate, 0) = 1 or coalesce(tf.is_fast, 0) = 1 or coalesce(tf.is_very_fast, 0) = 1 then 'TEMPO'
-            when coalesce(t.bpm, 0) > 0 then 'BPM'
-            else ''
-        end as tempo_source,
+        s.is_evening,
         case
             when coalesce(gf.is_sinterklaas, 0) = 1 then 1
             else 0
         end as is_sinterklaas,
         coalesce(gf.is_christmas, 0) as is_christmas,
+        coalesce(gf.is_oldies, 0) as is_oldies,
+        coalesce(gf.is_fout, 0) as is_fout,
+        case
+            when coalesce(gf.is_summer, 0) = 1
+              or coalesce(gf.is_zomer, 0) = 1
+              or coalesce(gf.is_lounge, 0) = 1 then 1
+            else 0
+        end as is_summer,
         case
             when coalesce(gf.is_sinterklaas, 0) = 1 and s.sinterklaas_share > 0 then 'Sinterklaas'
             when coalesce(gf.is_christmas, 0) = 1 and s.christmas_share > 0 then 'Christmas'
+            when coalesce(gf.is_summer, 0) = 1 or coalesce(gf.is_zomer, 0) = 1 or coalesce(gf.is_lounge, 0) = 1 then 'Summer'
             when coalesce(gf.is_hit, 0) = 1 then 'Hits'
-            when coalesce(gf.is_oldies, 0) = 1 then 'Oldies'
             else 'Other'
         end as category,
         case
-            when coalesce(tp.rating, 0) >= 100 then 0.40
-            when coalesce(tp.rating, 0) >= 90  then 0.55
-            when coalesce(tp.rating, 0) >= 80  then 0.85
-            when coalesce(tp.rating, 0) >= 70  then 1.40
-            when coalesce(tp.rating, 0) >= 60  then 1.20
-            when coalesce(tp.rating, 0) >= 50  then 1.00
-            when coalesce(tp.rating, 0) >= 40  then 0.30
-            else 0.45
+            when coalesce(tp.rating, 0) >= 100 then 2.10
+            when coalesce(tp.rating, 0) >= 90  then 1.95
+            when coalesce(tp.rating, 0) >= 80  then 1.80
+            when coalesce(tp.rating, 0) >= 70  then 1.50
+            when coalesce(tp.rating, 0) >= 60  then 0.45
+            when coalesce(tp.rating, 0) >= 50  then 0.12
+            when coalesce(tp.rating, 0) >= 40  then 0.03
+            else 0.20
         end as rating_weight,
         case
             when coalesce(tp.playCount, 0) = 0 then 1.30
@@ -128,17 +143,18 @@ base_eligible as (
             else 0.75
         end as play_count_weight,
         case
-            when coalesce(tf.is_slow, 0) = 1 then 2.40
-            when coalesce(tf.is_very_slow, 0) = 1 then 1.10
-            when coalesce(tf.is_moderate, 0) = 1 then 0.70
-            when coalesce(tf.is_fast, 0) = 1 then 0.08
-            when coalesce(tf.is_very_fast, 0) = 1 then 0.03
-            when coalesce(t.bpm, 0) between 1 and 84 then 1.70
-            when coalesce(t.bpm, 0) between 85 and 99 then 1.35
-            when coalesce(t.bpm, 0) between 100 and 112 then 0.95
-            when coalesce(t.bpm, 0) between 113 and 124 then 0.55
-            when coalesce(t.bpm, 0) >= 125 then 0.18
-            else 0.85
+            when s.is_evening = 0 then 1.00
+            when coalesce(tf.is_slow, 0) = 1 then 1.80
+            when coalesce(tf.is_very_slow, 0) = 1 then 1.00
+            when coalesce(tf.is_moderate, 0) = 1 then 1.00
+            when coalesce(tf.is_fast, 0) = 1 then 0.05
+            when coalesce(tf.is_very_fast, 0) = 1 then 0.02
+            when coalesce(t.bpm, 0) between 1 and 84 then 1.45
+            when coalesce(t.bpm, 0) between 85 and 99 then 1.25
+            when coalesce(t.bpm, 0) between 100 and 112 then 1.00
+            when coalesce(t.bpm, 0) between 113 and 124 then 0.70
+            when coalesce(t.bpm, 0) >= 125 then 0.35
+            else 0.90
         end as tempo_weight
     from tracks t
     left join tracks_persistent tp on tp.urlmd5 = t.urlmd5
@@ -150,24 +166,38 @@ base_eligible as (
     where
         t.audio = 1
         and t.secs >= 90
+
+        -- Automatisch afspelen vereist een rating van minimaal 2 sterren.
         and tp.rating >= 40
+
+        -- Permanente Custom Skip-uitsluitingen ook hier weren, zodat er geen
+        -- selectiepogingen verloren gaan aan nummers die toch geskipt worden.
         and coalesce(gf.is_permanent_exclusion, 0) = 0
-        and dph.id is null
-        and coalesce(gf.is_party, 0) = 0
-        and coalesce(gf.is_fout, 0) = 0
-        and not (coalesce(tf.is_fast, 0) = 1 or coalesce(tf.is_very_fast, 0) = 1)
-        and not (
-            coalesce(tf.is_slow, 0) = 0
-            and coalesce(tf.is_very_slow, 0) = 0
-            and coalesce(tf.is_moderate, 0) = 0
-            and coalesce(tf.is_fast, 0) = 0
-            and coalesce(tf.is_very_fast, 0) = 0
-            and coalesce(t.bpm, 0) >= 135
+
+        -- Very Fast valt altijd af. In de avond vallen ook Fast en nummers
+        -- zonder TEMPO-tag met een hoge BPM af.
+        and coalesce(tf.is_very_fast, 0) = 0
+        and (s.is_evening = 0 or coalesce(tf.is_fast, 0) = 0)
+        and (
+            s.is_evening = 0
+            or coalesce(tf.is_slow, 0) = 1
+            or coalesce(tf.is_very_slow, 0) = 1
+            or coalesce(tf.is_moderate, 0) = 1
+            or coalesce(tf.is_fast, 0) = 1
+            or coalesce(tf.is_very_fast, 0) = 1
+            or coalesce(t.bpm, 0) < 135
         )
+
+        -- Voorkom herhaling van nummers die al in de actieve sessie zitten.
+        and dph.id is null
+
+        -- Kerst is alleen tijdens het kerstschema beschikbaar.
         and (
             s.christmas_share > 0
             or coalesce(gf.is_christmas, 0) = 0
         )
+
+        -- Sinterklaas is alleen op 5 december beschikbaar.
         and (
             s.sinterklaas_share > 0
             or coalesce(gf.is_sinterklaas, 0) = 0
@@ -182,8 +212,10 @@ eligible as (
         case
             when is_sinterklaas = 1 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 86400)
             when is_christmas = 1 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 86400)
+            when is_fout = 1 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 15724800)
+            when category = 'Summer' then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 43200)
+            when is_oldies = 1 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 1209600)
             when category = 'Hits' then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 18000)
-            when category = 'Oldies' then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 864000)
             else last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 86400)
         end
 ),
@@ -213,9 +245,9 @@ category_targets as (
         case ct.category
             when 'Sinterklaas' then s.sinterklaas_share
             when 'Christmas'   then s.christmas_share
-            when 'Hits'        then max(0.0, 1.0 - s.sinterklaas_share - s.christmas_share) * 0.060
-            when 'Oldies'      then max(0.0, 1.0 - s.sinterklaas_share - s.christmas_share) * 0.180
-            else                    max(0.0, 1.0 - s.sinterklaas_share - s.christmas_share) * 0.760
+            when 'Summer'      then max(0.0, 1.0 - s.sinterklaas_share - s.christmas_share) * 0.500
+            when 'Hits'        then max(0.0, 1.0 - s.sinterklaas_share - s.christmas_share) * 0.250
+            else                    max(0.0, 1.0 - s.sinterklaas_share - s.christmas_share) * 0.250
         end as target_share
     from category_totals ct
     cross join settings s
@@ -230,9 +262,9 @@ weighted as (
         e.*,
         case
             when sc.active_target_share > 0 then ct.target_share / sc.active_target_share
-            when e.category = 'Hits'   then 0.060
-            when e.category = 'Oldies' then 0.180
-            else                            0.760
+            when e.category = 'Summer' then 0.500
+            when e.category = 'Hits'   then 0.250
+            else                            0.250
         end as category_share,
         ct.total_selection_weight
     from eligible_pool e

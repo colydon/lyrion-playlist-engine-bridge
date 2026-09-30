@@ -126,6 +126,47 @@ Because Kerst and Sinterklaas already live in the SQL, those seasonal changes
 still switch automatically at the right date boundaries inside the selected
 day or evening profile.
 
+SUMMER MIX (ADDITIONAL PLAYLIST)
+SummerMix is an extra playlist next to DagMix, AvondMix and DagAvondMix. The
+existing playlists are not changed in any way: SummerMix is only used when
+Homey (or the LMS menu) starts it explicitly, for example on a warm day.
+
+Normal days keep using DagAvondMix, so nothing changes there.
+
+What SummerMix does:
+- forces roughly 50% of the tracks from the genres Summer and Lounge together
+  (Lounge is still a small genre, so it rides along in the same summer block)
+- sets Hits to 25% and the remaining Other group to 25%
+  (DagMix uses 35% hits and 65% other, so both groups play less often here)
+- keeps the rating and playcount weighting of DagMix
+- excludes Very Fast at all times, just like DagMix
+
+Note about the Hits percentage: the library currently contains only about 50
+tracks tagged with the Hits genre (about 45 eligible after the rating and
+cooldown rules). With only one Hits track every 5 hours, the Hits share in
+practice tops out around 10%, no matter what target is configured. The 25%
+target therefore means "use every Hits track as often as the cooldown allows".
+The leftover share flows to Summer/Lounge and Other. As soon as more tracks are
+tagged with the Hits genre, SummerMix grows into the 25% on its own.
+
+Evening behaviour (local LMS time 18:00-07:00) is handled inside the SQL:
+- no TEMPO Fast or Very Fast tracks anymore
+- a mild BPM preference for slower tracks
+- Summer and Lounge stay just as important as during the day
+
+Because the day/evening switch is part of SummerMix.sql, this playlist needs
+no routing_windows in the config and no extra Python code.
+
+Cooldown:
+- Hits: 5 hours
+- Summer + Lounge: 12 hours
+- Oldies: 14 days
+- Fout: 182 days
+- Sinterklaas / Christmas / Other: 24 hours
+
+Start SummerMix through the same API:
+    POST /api/start with {"playlist":"SummerMix","player_name":"Kantoor"}
+
 DIRECT RUNNER ALTERNATIVE
 If DynamicPlaylists4 keeps failing even though DagMix.sql returns rows, use the
 PowerShell runner in this folder instead:

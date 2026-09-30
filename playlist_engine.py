@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 import argparse
+import gzip
 import json
 import logging
 import re
 import sqlite3
 import threading
 import time
+import zlib
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -412,14 +414,41 @@ class LmsClient:
         req = request.Request(
             url=f"{self.base_url}/jsonrpc.js",
             data=body,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                # Ask LMS explicitly for an uncompressed body. Some responses are
+                # otherwise gzip encoded, which used to break the JSON decode and
+                # abort an entire maintenance pass for every player.
+                "Accept-Encoding": "identity",
+            },
             method="POST",
         )
         try:
             with request.urlopen(req, timeout=60) as response:
-                return json.loads(response.read().decode("utf-8"))
+                raw = response.read()
+                content_encoding = str(response.headers.get("Content-Encoding", "")).lower()
         except error.URLError as exc:
             raise RequestError(f"LMS request failed: {exc}", HTTPStatus.BAD_GATEWAY) from exc
+
+        # Defensive fallback: decompress anyway if LMS ignored the request above.
+        if raw[:2] == b"\x1f\x8b" or "gzip" in content_encoding:
+            try:
+                raw = gzip.decompress(raw)
+            except (OSError, EOFError, zlib.error) as exc:
+                raise RequestError(
+                    f"LMS returned unreadable gzip data: {exc}",
+                    HTTPStatus.BAD_GATEWAY,
+                ) from exc
+
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            # Surface bad payloads as a normal LMS failure instead of an
+            # unhandled exception, so one player cannot stall all others.
+            raise RequestError(
+                f"LMS returned an unreadable response: {exc}",
+                HTTPStatus.BAD_GATEWAY,
+            ) from exc
 
     def list_players(self) -> List[Dict[str, Any]]:
         result = self._request("", ["players", 0, 100])

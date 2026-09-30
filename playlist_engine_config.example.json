@@ -67,6 +67,15 @@
           "playlist": "AvondMix"
         }
       ]
+    },
+    "SummerMix": {
+      "title": "SummerMix",
+      "sql_file": "SummerMix.sql",
+      "description": "Zomermix met 50% Summer/Lounge, 25% hits en 25% overig; 's avonds rustiger (geen Fast/Very Fast).",
+      "start_with_genre": "Summer",
+      "initial_count": 20,
+      "topup_count": 10,
+      "low_watermark": 5
     }
   },
   "skip_rules": [

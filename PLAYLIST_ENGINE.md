@@ -12,6 +12,7 @@ The Python service in [playlist_engine.py](c:/Users/rickl/Desktop/cti_dagmix_v3/
 The LMS bridge lives in [lms_plugin/PlaylistEngineBridge/Plugin.pm](c:/Users/rickl/Desktop/cti_dagmix_v3/lms_plugin/PlaylistEngineBridge/Plugin.pm).
 
 **What Is Test-Ready**
+
 - Multiple playlists are supported through the `playlists` section in [playlist_engine_config.example.json](c:/Users/rickl/Desktop/cti_dagmix_v3/playlist_engine_config.example.json).
 - The API can target any player by `player_name` or `player_id`.
 - The queue auto-top-up loop is active for every managed session.
@@ -53,9 +54,20 @@ Example playlist catalog:
       {"start": "07:00", "end": "18:00", "playlist": "DagMix"},
       {"start": "18:00", "end": "07:00", "playlist": "AvondMix"}
     ]
+  },
+  "SummerMix": {
+    "title": "SummerMix",
+    "sql_file": "SummerMix.sql",
+    "description": "Zomermix met 50% Summer/Lounge, 25% hits en 25% overig; 's avonds rustiger.",
+    "start_with_genre": "Summer",
+    "initial_count": 20,
+    "topup_count": 10,
+    "low_watermark": 5
   }
 }
 ```
+
+`SummerMix` is an additive playlist: `DagMix`, `AvondMix` and `DagAvondMix` are untouched. Its day/evening behaviour (no TEMPO Fast/Very Fast after 18:00) lives in `SummerMix.sql`, so it needs no `routing_windows` and no Python change.
 
 If `engine.auto_discover_playlists` is `true`, extra `.sql` files in the playlist folder are also picked up automatically.
 
@@ -127,7 +139,8 @@ nohup /home/tc/playlist_engine/playlist_engine_watchdog.sh >/dev/null 2>&1 &
 ```
 
 and let `bootlocal.sh` start the watchdog, not `playlist_engine.py` directly.
-```
+
+````
 
 **3. Homey Calls**
 The stable Homey pattern is one flow per intent. Homey only has to call the engine API.
@@ -138,7 +151,7 @@ Start DagMix on Kantoor:
 POST http://<engine-host>:8787/api/start
 Header: X-API-Key: <token>
 Body: {"playlist":"DagMix","player_name":"Kantoor"}
-```
+````
 
 Start DagMix on Woonkamer:
 
@@ -156,6 +169,14 @@ Header: X-API-Key: <token>
 Body: {"playlist":"DagAvondMix","player_name":"Keuken"}
 ```
 
+Start the summer mix on a warm day:
+
+```text
+POST http://<engine-host>:8787/api/start
+Header: X-API-Key: <token>
+Body: {"playlist":"SummerMix","player_name":"Kantoor"}
+```
+
 Preview 10 tracks for Beneden:
 
 ```text
@@ -171,6 +192,7 @@ Body: {"player_name":"Kantoor"}
 ```
 
 Homey recommendation:
+
 - Make one Flow per room if you want fixed buttons.
 - Make one Advanced Flow that first chooses a player and then posts the corresponding `player_name`.
 - Keep the playlist id stable, for example `DagMix`, even if the title shown in LMS changes later.
@@ -190,12 +212,14 @@ That means the engine remains generic. Every new SQL file becomes another manage
 The LMS bridge is intentionally small. It does not own queue logic. It only shows playlists and calls the engine API.
 
 Behavior:
+
 - LMS shows a `Custom Playlists` menu.
 - The user selects the normal LMS player at the top right first.
 - Opening `Custom Playlists` shows all enabled playlists from the engine.
 - Clicking one starts that playlist on the currently selected LMS player.
 
 **Install The LMS Bridge**
+
 1. Copy [lms_plugin/PlaylistEngineBridge](c:/Users/rickl/Desktop/cti_dagmix_v3/lms_plugin/PlaylistEngineBridge) to your LMS custom plugin directory.
 2. Copy [lms_plugin/PlaylistEngineBridge/bridge_config.example.json](c:/Users/rickl/Desktop/cti_dagmix_v3/lms_plugin/PlaylistEngineBridge/bridge_config.example.json) to `bridge_config.json` in that same plugin folder.
 3. Set `engine_base_url` and `api_token` in `bridge_config.json`.
@@ -207,6 +231,7 @@ Behavior:
 Because the selected LMS player is passed as `player_id`, you do not need separate menu trees per player.
 
 **6. First Test Sequence**
+
 1. Start the Python engine.
 2. Call `/api/health`.
 3. Call `/api/playlists`.
@@ -218,6 +243,7 @@ Because the selected LMS player is passed as `player_id`, you do not need separa
 9. Test the same start action from Homey for a second player.
 
 **Notes**
+
 - The engine is the source of truth for managed sessions and endless refill.
 - The LMS bridge is only a launcher.
 - Seasonal rules such as Kerst and Sinterklaas remain best kept in SQL.
