@@ -76,6 +76,15 @@
       "initial_count": 20,
       "topup_count": 10,
       "low_watermark": 5
+    },
+    "PartyMix": {
+      "title": "PartyMix",
+      "sql_file": "PartyMix.sql",
+      "description": "Opzwepende feestmix met vooral Party, af en toe een snelle hit; geen kerst, sinterklaas, live of karaoke.",
+      "start_with_genre": "Party",
+      "initial_count": 20,
+      "topup_count": 10,
+      "low_watermark": 5
     }
   },
   "skip_rules": [

@@ -32,7 +32,8 @@ DPL switches the primary Custom Skip filter while DagMix is active and restores
 the normal filter when it stops. Other playlists do not need to be edited.
 
 CHRISTMAS SCHEDULE (local LMS time)
-- Dec 1-9: 30%
+- Dec 5: 0% (Sinterklaas only, never combine the two)
+- Dec 1-4 and Dec 6-9: 30%
 - Dec 10-19: 65%
 - Dec 20-26: 100%
 - Dec 27-Nov 30: 0%
@@ -41,6 +42,9 @@ SINTERKLAAS SCHEDULE (local LMS time)
 - Dec 5: 33%
 - all other days: 0%
 
+On Dec 5 the Sinterklaas tracks are also allowed without a rating, because all
+19 of them are unrated and would otherwise never be selected at all.
+
 NORMAL MIX TARGET
 - Hits: 35%
 - Other: 65%
@@ -48,7 +52,8 @@ NORMAL MIX TARGET
 
 RATING
 - < 2 stars: excluded
-- unrated: excluded from automatic playback
+- unrated: excluded from automatic playback, except Sinterklaas tracks on the
+  Sinterklaas day itself (see SINTERKLAAS SCHEDULE)
 - 5 stars: weight 8
 - 4.5 stars: weight 6
 - 4 stars: weight 4
@@ -166,6 +171,42 @@ Cooldown:
 
 Start SummerMix through the same API:
     POST /api/start with {"playlist":"SummerMix","player_name":"Kantoor"}
+
+PARTY MIX (ADDITIONAL PLAYLIST)
+PartyMix is the fifth playlist and, like SummerMix, purely additive: the other
+playlists are untouched. It is meant for a party, or as an upbeat background
+while working.
+
+What PartyMix does:
+- mainly Party tracks (target 80%)
+- occasionally a hit (target 20%), but only an energetic one:
+  TEMPO Fast or Very Fast, or a BPM of 122 or higher as long as the track is
+  not tagged Slow or Very Slow. That BPM rule also applies when a track has no
+  TEMPO tag at all.
+- rating stays decisive: a higher rating is played clearly more often
+- a mild tempo nudge towards fast/very fast, never stronger than a rating step
+
+Always excluded:
+- Kerst and Sinterklaas (PartyMix is not seasonal)
+- Live, Karaoke, Kinderliedjes and Kindermuziek
+- everything below 2 stars
+
+Cooldown:
+- Hits: 5 hours
+- Party: 24 hours
+- Oldies: 14 days
+- Fout: 182 days
+
+Note about the hit share: the library has 443 usable Party tracks but only
+about 25 hits that are energetic enough. In a normal batch of candidates the
+hits land around 15%, and later in a session they taper off simply because
+there are no more of them. That matches "now and then a hit".
+
+PartyMix has no day/evening and no seasonal logic: it is always the same
+upbeat profile.
+
+Start PartyMix through the same API:
+    POST /api/start with {"playlist":"PartyMix","player_name":"Woonkamer"}
 
 DIRECT RUNNER ALTERNATIVE
 If DynamicPlaylists4 keeps failing even though DagMix.sql returns rows, use the

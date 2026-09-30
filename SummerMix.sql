@@ -28,7 +28,8 @@
 -- All other days: 0% Sinterklaas
 --
 -- Christmas schedule (local LMS time):
--- Dec 1-9   : 30% Christmas
+-- Dec 5     : 0% Christmas (alleen Sinterklaas, nooit combineren)
+-- Dec 1-4 en 6-9: 30% Christmas
 -- Dec 10-19 : 65% Christmas
 -- Dec 20-26 : 100% Christmas
 -- Dec 27-Nov 30: 0% Christmas
@@ -48,6 +49,8 @@ settings as (
             else 0.00
         end as sinterklaas_share,
         case
+            -- 5 december: alleen Sinterklaas, geen Kerst erdoorheen.
+            when strftime('%m-%d', 'now', 'localtime') = '12-05' then 0.00
             when strftime('%m-%d', 'now', 'localtime') between '12-01' and '12-09' then 0.30
             when strftime('%m-%d', 'now', 'localtime') between '12-10' and '12-19' then 0.65
             when strftime('%m-%d', 'now', 'localtime') between '12-20' and '12-26' then 1.00
@@ -168,7 +171,13 @@ base_eligible as (
         and t.secs >= 90
 
         -- Automatisch afspelen vereist een rating van minimaal 2 sterren.
-        and tp.rating >= 40
+        -- Uitzondering: op Sinterklaasdag mogen de Sinterklaasnummers mee, ook
+        -- al zijn die alle 19 onbeoordeeld. Zonder dit levert dat schema nooit
+        -- een enkel nummer op.
+        and (
+            tp.rating >= 40
+            or (s.sinterklaas_share > 0 and coalesce(gf.is_sinterklaas, 0) = 1)
+        )
 
         -- Permanente Custom Skip-uitsluitingen ook hier weren, zodat er geen
         -- selectiepogingen verloren gaan aan nummers die toch geskipt worden.

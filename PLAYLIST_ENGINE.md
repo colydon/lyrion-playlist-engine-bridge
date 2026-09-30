@@ -63,11 +63,20 @@ Example playlist catalog:
     "initial_count": 20,
     "topup_count": 10,
     "low_watermark": 5
+  },
+  "PartyMix": {
+    "title": "PartyMix",
+    "sql_file": "PartyMix.sql",
+    "description": "Opzwepende feestmix met vooral Party en af en toe een snelle hit.",
+    "start_with_genre": "Party",
+    "initial_count": 20,
+    "topup_count": 10,
+    "low_watermark": 5
   }
 }
 ```
 
-`SummerMix` is an additive playlist: `DagMix`, `AvondMix` and `DagAvondMix` are untouched. Its day/evening behaviour (no TEMPO Fast/Very Fast after 18:00) lives in `SummerMix.sql`, so it needs no `routing_windows` and no Python change.
+`SummerMix` en `PartyMix` zijn aanvullende playlists: `DagMix`, `AvondMix` en `DagAvondMix` blijven ongewijzigd. Beide hebben geen extra Python-code nodig: `SummerMix.sql` regelt zelf de dag/avondwissel (geen TEMPO Fast/Very Fast na 18:00) en `PartyMix.sql` is een vast opzwepend profiel zonder seizoenslogica.
 
 If `engine.auto_discover_playlists` is `true`, extra `.sql` files in the playlist folder are also picked up automatically.
 
@@ -175,6 +184,14 @@ Start the summer mix on a warm day:
 POST http://<engine-host>:8787/api/start
 Header: X-API-Key: <token>
 Body: {"playlist":"SummerMix","player_name":"Kantoor"}
+```
+
+Start the party mix for a party or as upbeat work music:
+
+```text
+POST http://<engine-host>:8787/api/start
+Header: X-API-Key: <token>
+Body: {"playlist":"PartyMix","player_name":"Woonkamer"}
 ```
 
 Preview 10 tracks for Beneden:

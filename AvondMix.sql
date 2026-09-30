@@ -12,7 +12,8 @@
 -- All other days: 0% Sinterklaas
 --
 -- Christmas schedule (local LMS time):
--- Dec 1-9   : 30% Christmas
+-- Dec 5     : 0% Christmas (Sinterklaas only; never mix the two)
+-- Dec 1-4 and Dec 6-9: 30% Christmas
 -- Dec 10-19 : 65% Christmas
 -- Dec 20-26 : 100% Christmas
 -- Dec 27-Nov 30: 0% Christmas
@@ -35,6 +36,8 @@ settings as (
             else 0.00
         end as sinterklaas_share,
         case
+            -- Dec 5: Sinterklaas only, keep Christmas completely out.
+            when strftime('%m-%d', 'now', 'localtime') = '12-05' then 0.00
             when strftime('%m-%d', 'now', 'localtime') between '12-01' and '12-09' then 0.30
             when strftime('%m-%d', 'now', 'localtime') between '12-10' and '12-19' then 0.65
             when strftime('%m-%d', 'now', 'localtime') between '12-20' and '12-26' then 1.00
@@ -150,7 +153,13 @@ base_eligible as (
     where
         t.audio = 1
         and t.secs >= 90
-        and tp.rating >= 40
+
+        -- Minimum 2 stars, except on Sinterklaas day: those tracks are all
+        -- unrated and would otherwise never make it into the mix.
+        and (
+            tp.rating >= 40
+            or (s.sinterklaas_share > 0 and coalesce(gf.is_sinterklaas, 0) = 1)
+        )
         and coalesce(gf.is_permanent_exclusion, 0) = 0
         and dph.id is null
         and coalesce(gf.is_party, 0) = 0
