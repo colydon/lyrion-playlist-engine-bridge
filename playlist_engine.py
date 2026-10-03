@@ -834,6 +834,7 @@ class SessionManager:
         self._recover_after_disconnect: Dict[str, float] = {}
         self._last_recovery_attempt_at: Dict[str, float] = {}
         self._playback_progress_state: Dict[str, Dict[str, float]] = {}
+        self._stalled_track_id: Dict[str, int] = {}
 
     def start_background_loop(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -853,6 +854,7 @@ class SessionManager:
         self._recover_after_disconnect.pop(player_id, None)
         self._last_recovery_attempt_at.pop(player_id, None)
         self._playback_progress_state.pop(player_id, None)
+        self._stalled_track_id.pop(player_id, None)
 
     def _can_attempt_recovery(self, player_id: str, now: float) -> bool:
         last_attempt_at = self._last_recovery_attempt_at.get(player_id, 0.0)
@@ -883,14 +885,45 @@ class SessionManager:
     def _clear_playback_progress_state(self, player_id: str) -> None:
         self._playback_progress_state.pop(player_id, None)
 
-    def _recover_stalled_playback(self, player_id: str, current_index: int, playback_time: float) -> None:
-        LOGGER.warning(
-            "Detected stalled playback for %s at queue index %s and time %.2fs; reopening the current track.",
-            player_id,
-            current_index,
-            playback_time,
+    def _recover_stalled_playback(
+        self,
+        player_id: str,
+        current_index: int,
+        playback_time: float,
+        current_track_id: Optional[int] = None,
+        total_tracks: int = 0,
+    ) -> None:
+        already_tried = (
+            current_track_id is not None
+            and self._stalled_track_id.get(player_id) == current_track_id
         )
-        self.lms.play_index(player_id, current_index)
+
+        if already_tried and total_tracks > current_index + 1:
+            # Reopening this track already failed once, so replaying it again
+            # would loop forever. That happens with a track that never reaches
+            # its own end, for example a file with a broken container. Skip on
+            # to the next queue item instead of replaying the same track.
+            LOGGER.warning(
+                "Playback for %s is stuck again on track %s (queue index %s, time %.2fs); "
+                "skipping to the next queue item instead of replaying it.",
+                player_id,
+                current_track_id,
+                current_index,
+                playback_time,
+            )
+            self._stalled_track_id.pop(player_id, None)
+            self.lms.play_index(player_id, current_index + 1)
+        else:
+            LOGGER.warning(
+                "Detected stalled playback for %s at queue index %s and time %.2fs; reopening the current track.",
+                player_id,
+                current_index,
+                playback_time,
+            )
+            if current_track_id is not None:
+                self._stalled_track_id[player_id] = current_track_id
+            self.lms.play_index(player_id, current_index)
+
         self._clear_playback_progress_state(player_id)
 
     def _handle_playback_progress(
@@ -902,6 +935,8 @@ class SessionManager:
         queue_intact: bool,
         current_index: int,
         playback_time: float,
+        current_track_id: Optional[int] = None,
+        total_tracks: int = 0,
     ) -> None:
         if not self.config.stalled_playback_detection_enabled:
             self._clear_playback_progress_state(player_id)
@@ -910,6 +945,14 @@ class SessionManager:
         if mode != "play" or connected == 0 or not queue_intact:
             self._clear_playback_progress_state(player_id)
             return
+
+        # Playback moved on to a different track, so forget the earlier stall.
+        # Comparing track ids (not queue indexes) keeps this correct while the
+        # queue is being pruned and the indexes shift.
+        if current_track_id is not None:
+            stalled_before = self._stalled_track_id.get(player_id)
+            if stalled_before is not None and stalled_before != current_track_id:
+                self._stalled_track_id.pop(player_id, None)
 
         state = self._playback_progress_state.get(player_id)
         if not state:
@@ -951,7 +994,9 @@ class SessionManager:
         if not self._can_attempt_recovery(player_id, now):
             return
 
-        self._recover_stalled_playback(player_id, current_index, playback_time)
+        self._recover_stalled_playback(
+            player_id, current_index, playback_time, current_track_id, total_tracks
+        )
 
     def _build_session_tracks(
         self,
@@ -1033,6 +1078,7 @@ class SessionManager:
             current_index = int(status.get("playlist_cur_index") or 0)
             playback_time = float(status.get("time") or 0.0)
             total_tracks = max(int(status.get("playlist_tracks") or 0), len(queue_ids))
+            current_track_id = queue_ids[current_index] if 0 <= current_index < len(queue_ids) else None
             remaining = max(total_tracks - current_index - 1, 0)
             queue_intact = total_tracks > 0 or bool(queue_ids)
             queued_from_current = queue_ids[current_index:] if 0 <= current_index < len(queue_ids) else queue_ids
@@ -1106,7 +1152,17 @@ class SessionManager:
                     LOGGER.info("Resuming managed session monitoring for %s after the player returned to play.", player_id)
                 self._manual_suspend_reason.pop(player_id, None)
                 self._recover_after_disconnect.pop(player_id, None)
-                self._handle_playback_progress(player_id, now, mode, connected, queue_intact, current_index, playback_time)
+                self._handle_playback_progress(
+                    player_id,
+                    now,
+                    mode,
+                    connected,
+                    queue_intact,
+                    current_index,
+                    playback_time,
+                    current_track_id,
+                    total_tracks,
+                )
                 self._prune_played_queue_entries(player_id, current_index)
             elif mode in {"pause", "stop"}:
                 self._clear_playback_progress_state(player_id)
