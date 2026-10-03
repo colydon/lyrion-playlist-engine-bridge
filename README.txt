@@ -208,6 +208,46 @@ upbeat profile.
 Start PartyMix through the same API:
     POST /api/start with {"playlist":"PartyMix","player_name":"Woonkamer"}
 
+EXTRA PLAYLISTS (THEMA-MIXEN)
+Naast de dag/avond/seizoen-mixen zijn er negen extra playlists die je los kunt
+starten wanneer je daar zin in hebt. Ze hebben allemaal dezelfde opzet:
+
+- ze werken volledig op zichzelf: geen dag/avondmodus en geen seizoenslogica,
+  dus je kunt ze op elk moment starten
+- ze blijven zichzelf verversen (24-uurs cooldown op wat recent speelde)
+- Kerst, Sinterklaas, Live, Karaoke, Kinderliedjes en Kindermuziek vallen af.
+  Alleen bij KerstMix is Kerst juist de selectie.
+- minimaal 2 sterren
+- een bewust VLAKKE waarderingscurve: 5* = 2.00, 4.5* = 1.80, 4* = 1.60,
+  3.5* = 1.40, 3* = 1.20, 2.5* = 1.00, 2* = 0.80
+  Een hoger gewaardeerd nummer wordt dus vaker gekozen, maar niet altijd:
+  een 4,5-sterren hit komt echt niet bij elke selectie bovendrijven. Het gaat
+  om een gebalanceerde mix, niet om zwart/wit.
+- weinig gedraaide nummers krijgen een klein extra duwtje, zodat de playlist
+  blijft verversen
+- artiesten volgen elkaar niet te snel op: dat regelt de engine met
+  artist_repeat_window_tracks (30 nummers), niet de SQL
+
+De negen playlists:
+
+    OldiesMix           alle nummers met het genre Oldies
+    80sMix              jaartal 1980-1989
+    90sMix              jaartal 1990-1999
+    00sMix              jaartal 2000-2009
+    10sMix              jaartal 2010-2019
+    20sMix              jaartal 2020-2029
+    SpaansMix           genre Spaans
+    NederlandstaligMix  genre Nederlandstalig
+    KerstMix            genre Kerst (speelt uitsluitend kerstmuziek)
+
+Wat er in de bibliotheek beschikbaar is (na alle filters):
+    OldiesMix 752 | 80sMix 330 | 90sMix 570 | 00sMix 1033 | 10sMix 1184
+    20sMix 1120 | SpaansMix 356 | NederlandstaligMix 657 | KerstMix 283
+
+Starten gaat net als bij de andere playlists:
+    POST /api/start with {"playlist":"KerstMix","player_name":"Woonkamer"}
+Ze staan ook gewoon in het LMS-menu onder Eigen Playlists.
+
 DIRECT RUNNER ALTERNATIVE
 If DynamicPlaylists4 keeps failing even though DagMix.sql returns rows, use the
 PowerShell runner in this folder instead:

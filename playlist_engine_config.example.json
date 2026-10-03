@@ -85,6 +85,78 @@
       "initial_count": 20,
       "topup_count": 10,
       "low_watermark": 5
+    },
+    "OldiesMix": {
+      "title": "OldiesMix",
+      "sql_file": "OldiesMix.sql",
+      "description": "Oldies: alle nummers met het genre Oldies, met een vlakke waarderingscurve.",
+      "initial_count": 20,
+      "topup_count": 10,
+      "low_watermark": 5
+    },
+    "80sMix": {
+      "title": "80sMix",
+      "sql_file": "80sMix.sql",
+      "description": "80sMix: alleen muziek uit de jaren '80, op basis van het jaartal.",
+      "initial_count": 20,
+      "topup_count": 10,
+      "low_watermark": 5
+    },
+    "90sMix": {
+      "title": "90sMix",
+      "sql_file": "90sMix.sql",
+      "description": "90sMix: alleen muziek uit de jaren '90, op basis van het jaartal.",
+      "initial_count": 20,
+      "topup_count": 10,
+      "low_watermark": 5
+    },
+    "00sMix": {
+      "title": "00sMix",
+      "sql_file": "00sMix.sql",
+      "description": "00sMix: alleen muziek uit 2000-2009, op basis van het jaartal.",
+      "initial_count": 20,
+      "topup_count": 10,
+      "low_watermark": 5
+    },
+    "10sMix": {
+      "title": "10sMix",
+      "sql_file": "10sMix.sql",
+      "description": "10sMix: alleen muziek uit 2010-2019, op basis van het jaartal.",
+      "initial_count": 20,
+      "topup_count": 10,
+      "low_watermark": 5
+    },
+    "20sMix": {
+      "title": "20sMix",
+      "sql_file": "20sMix.sql",
+      "description": "20sMix: alleen muziek uit 2020-2029, op basis van het jaartal.",
+      "initial_count": 20,
+      "topup_count": 10,
+      "low_watermark": 5
+    },
+    "SpaansMix": {
+      "title": "SpaansMix",
+      "sql_file": "SpaansMix.sql",
+      "description": "SpaansMix: alleen Spaanstalige muziek op basis van het genre.",
+      "initial_count": 20,
+      "topup_count": 10,
+      "low_watermark": 5
+    },
+    "NederlandstaligMix": {
+      "title": "NederlandstaligMix",
+      "sql_file": "NederlandstaligMix.sql",
+      "description": "NederlandstaligMix: alleen Nederlandstalige muziek op basis van het genre.",
+      "initial_count": 20,
+      "topup_count": 10,
+      "low_watermark": 5
+    },
+    "KerstMix": {
+      "title": "KerstMix",
+      "sql_file": "KerstMix.sql",
+      "description": "KerstMix: speelt uitsluitend kerstliedjes.",
+      "initial_count": 20,
+      "topup_count": 10,
+      "low_watermark": 5
     }
   },
   "skip_rules": [

@@ -78,6 +78,8 @@ Example playlist catalog:
 
 `SummerMix` en `PartyMix` zijn aanvullende playlists: `DagMix`, `AvondMix` en `DagAvondMix` blijven ongewijzigd. Beide hebben geen extra Python-code nodig: `SummerMix.sql` regelt zelf de dag/avondwissel (geen TEMPO Fast/Very Fast na 18:00) en `PartyMix.sql` is een vast opzwepend profiel zonder seizoenslogica.
 
+Daarnaast zijn er nog negen thema-playlists met dezelfde opzet als `PartyMix` (één filter, vlakke waarderingscurve, geen dag/avond- of seizoenslogica): `OldiesMix`, `80sMix`, `90sMix`, `00sMix`, `10sMix`, `20sMix`, `SpaansMix`, `NederlandstaligMix` en `KerstMix`. Zie `README.txt` voor de details en ze staan in `playlist_engine_config.example.json`.
+
 If `engine.auto_discover_playlists` is `true`, extra `.sql` files in the playlist folder are also picked up automatically.
 
 `routing_windows` are evaluated in the engine host's local time. This lets one logical playlist switch source SQL during playback top-ups without starting a new LMS session.
