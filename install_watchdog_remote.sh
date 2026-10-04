@@ -26,15 +26,30 @@ if [ -d /home/tc/lms_plugin/PlaylistEngineBridge ]; then
     cp -R /home/tc/lms_plugin/PlaylistEngineBridge/. /usr/local/slimserver/Plugins/PlaylistEngineBridge/
 fi
 
+# Playlist engine watchdog.
+#
+# This block MUST come before the pcp_startup line below. That line is
+# "pcp_startup.sh | tee -a /var/log/pcp_boot.log" and it never finishes,
+# because LMS and the bridges inherit the pipe and keep it open. Everything
+# placed after it is therefore never executed.
+WATCHDOG=/home/tc/playlist_engine/playlist_engine_watchdog.sh
+ENGINE_DIR=/home/tc/playlist_engine
+
+if [ -x "$WATCHDOG" ]; then
+    if ps w | grep '[p]laylist_engine_watchdog.sh' >/dev/null 2>&1; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') bootlocal: watchdog already running" >> "$ENGINE_DIR/boot.log"
+    else
+        # The lock directory is part of the backup, so it can be left over from
+        # a previous boot. Clear it before starting.
+        rm -rf "$ENGINE_DIR/.playlist_engine_watchdog.lock"
+        nohup "$WATCHDOG" >/dev/null 2>&1 &
+        echo "$(date '+%Y-%m-%d %H:%M:%S') bootlocal: started watchdog (pid $!)" >> "$ENGINE_DIR/boot.log"
+    fi
+fi
+
 #pCPstart------
 /usr/local/etc/init.d/pcp_startup.sh 2>&1 | tee -a /var/log/pcp_boot.log
 #pCPstop------
-
-if [ -x /home/tc/playlist_engine/playlist_engine_watchdog.sh ]; then
-    if ! ps w | grep '[p]laylist_engine_watchdog.sh' >/dev/null 2>&1; then
-        nohup /home/tc/playlist_engine/playlist_engine_watchdog.sh >/dev/null 2>&1 &
-    fi
-fi
 EOF
 
 if ! ps w | grep '[p]laylist_engine_watchdog.sh' >/dev/null 2>&1; then

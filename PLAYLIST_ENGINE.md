@@ -151,6 +151,12 @@ nohup /home/tc/playlist_engine/playlist_engine_watchdog.sh >/dev/null 2>&1 &
 
 and let `bootlocal.sh` start the watchdog, not `playlist_engine.py` directly.
 
+**Let op bij het opstarten (belangrijk)**
+
+Start de watchdog altijd **boven** de regel met `pcp_startup.sh | tee -a /var/log/pcp_boot.log` in `/opt/bootlocal.sh`. Die regel komt namelijk nooit klaar: LMS en de bridges erven de pipe en houden hem open, dus `tee` blijft wachten en `bootlocal.sh` komt nooit verder. Alles wat daaronder staat wordt dus nooit uitgevoerd — met als gevolg dat de engine na een herstart niet terugkomt en de playlists blijven stilstaan zonder dat er iets in de logs staat.
+
+De watchdog schrijft bij het opstarten een regel naar `playlist_engine/boot.log`, zodat je achteraf kunt zien of hij daadwerkelijk gestart is. Verwijder daarnaast vóór het starten het slotbestand `playlist_engine/.playlist_engine_watchdog.lock`: dat staat in de backup en kan dus van een vorige boot zijn.
+
 ````
 
 **3. Homey Calls**
