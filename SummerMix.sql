@@ -37,9 +37,14 @@
 -- Normal mix target (buiten het seizoen):
 -- Summer+Lounge 50.0%, Hits 25.0%, Other 25.0%
 --
--- Cooldown:
--- Hits 5 uur, Summer/Lounge 12 uur, Oldies 14 dagen, Fout 182 dagen,
--- Sinterklaas/Kerst/Other 24 uur.
+-- Waarderingsmodel: zie WAARDERING_POOLS.md (tabel A "hits voorop"). De rating
+-- bepaalt de speelfrequentie: 5,0* het vaakst, dan 4,5*, dan 4,0*, dan de
+-- ex-hits (3,5*), dan de grote 3,0*-bulk, dan 2,5* en tot slot 2,0*.
+--
+-- Cooldown (per waarderingspool, zie tier_cooldown):
+-- 5,0* 3 uur, 4,5* 5 uur, 4,0* 8 uur, 3,5* 5 dagen, 3,0* 24 uur,
+-- 2,5* 8 dagen, 2,0* 21 dagen. Summer/Lounge-pools 12 uur, Oldies 14 dagen.
+-- Een fout nummer vanaf 4,0* volgt gewoon zijn pool.
 
 with
 settings as (
@@ -124,19 +129,30 @@ base_eligible as (
             when coalesce(gf.is_sinterklaas, 0) = 1 and s.sinterklaas_share > 0 then 'Sinterklaas'
             when coalesce(gf.is_christmas, 0) = 1 and s.christmas_share > 0 then 'Christmas'
             when coalesce(gf.is_summer, 0) = 1 or coalesce(gf.is_zomer, 0) = 1 or coalesce(gf.is_lounge, 0) = 1 then 'Summer'
-            when coalesce(gf.is_hit, 0) = 1 then 'Hits'
+            when coalesce(gf.is_hit, 0) = 1 or coalesce(tp.rating, 0) >= 80 then 'Hits'
             else 'Other'
         end as category,
+        -- WAARDERING = SPEELFREQUENTIE (zie WAARDERING_POOLS.md, tabel A "hits voorop")
         case
-            when coalesce(tp.rating, 0) >= 100 then 2.10
-            when coalesce(tp.rating, 0) >= 90  then 1.95
-            when coalesce(tp.rating, 0) >= 80  then 1.80
-            when coalesce(tp.rating, 0) >= 70  then 1.50
-            when coalesce(tp.rating, 0) >= 60  then 0.45
+            when coalesce(tp.rating, 0) >= 100 then 4.00
+            when coalesce(tp.rating, 0) >= 90  then 2.20
+            when coalesce(tp.rating, 0) >= 80  then 1.25
+            when coalesce(tp.rating, 0) >= 70  then 0.60
+            when coalesce(tp.rating, 0) >= 60  then 0.35
             when coalesce(tp.rating, 0) >= 50  then 0.12
-            when coalesce(tp.rating, 0) >= 40  then 0.03
-            else 0.20
+            when coalesce(tp.rating, 0) >= 40  then 0.04
+            else 0.05
         end as rating_weight,
+        -- Adempauze per waarderingspool (tabel A).
+        case
+            when coalesce(tp.rating, 0) >= 100 then 10800
+            when coalesce(tp.rating, 0) >= 90  then 18000
+            when coalesce(tp.rating, 0) >= 80  then 28800
+            when coalesce(tp.rating, 0) >= 70  then 432000
+            when coalesce(tp.rating, 0) >= 60  then 86400
+            when coalesce(tp.rating, 0) >= 50  then 691200
+            else 1814400
+        end as tier_cooldown,
         case
             when coalesce(tp.playCount, 0) = 0 then 1.30
             when coalesce(tp.playCount, 0) <= 5 then 1.15
@@ -220,12 +236,14 @@ eligible as (
     where
         case
             when is_sinterklaas = 1 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 86400)
-            when is_christmas = 1 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 86400)
-            when is_fout = 1 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 15724800)
+            when is_christmas = 1 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - tier_cooldown)
+            -- Een fout nummer dat (bijna) een hit is, mag gewoon langskomen.
+            when is_fout = 1 and rating < 80 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 1814400)
+            -- Hits en ex-hits volgen hun pool; de zomerpools daarna iets sneller.
+            when rating >= 80 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - tier_cooldown)
             when category = 'Summer' then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 43200)
             when is_oldies = 1 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 1209600)
-            when category = 'Hits' then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 18000)
-            else last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 86400)
+            else last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - tier_cooldown)
         end
 ),
 eligible_pool as (

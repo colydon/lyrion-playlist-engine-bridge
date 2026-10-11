@@ -17,16 +17,19 @@
 -- - Kerst en Sinterklaas
 -- - alles onder 2 sterren
 --
--- Waardering is het selectiegewicht, met een bewust VLAKKE curve:
---   5* = 2.00   4.5* = 1.80   4* = 1.60   3.5* = 1.40
---   3* = 1.20   2.5* = 1.00   2* = 0.80
--- Een hoger gewaardeerd nummer wordt dus vaker gekozen, maar niet altijd:
--- een 4,5-sterren hit komt echt niet bij elke selectie bovendrijven. Het gaat
--- om een gebalanceerde mix, niet om zwart/wit. Een nummer dat nog weinig
--- gedraaid is krijgt een klein extra duwtje, zodat de playlist blijft verversen.
+-- Waardering = speelfrequentie, niet "hoe leuk": zie WAARDERING_POOLS.md,
+-- tabel A "hits voorop".
+--   5* = 4.00   4.5* = 2.20   4* = 1.25   3.5* = 0.60
+--   3* = 0.35   2.5* = 0.12   2* = 0.04
+-- Een hogere rating komt dus duidelijk vaker langs. Dat blijft wel dynamisch:
+-- geen enkel nummer neemt de playlist over en de cooldown per pool houdt
+-- herhaling binnen de dag tegen. Een nummer dat nog weinig gedraaid is krijgt
+-- een klein extra duwtje, zodat de playlist blijft verversen.
 --
--- Cooldown: 24 uur. Wat recent speelde valt even af; is de pool daardoor leeg,
--- dan pakt de query automatisch de volledige lijst.
+-- Cooldown per pool (zie tier_cooldown): 5* 3 uur, 4.5* 5 uur, 4* 8 uur,
+-- 3.5* 5 dagen, 3* 24 uur, 2.5* 8 dagen, 2* 21 dagen. Wat recent speelde valt
+-- even af; is de pool daardoor leeg, dan pakt de query automatisch de volledige
+-- lijst.
 --
 -- Artiesten volgen elkaar niet te snel op: dat regelt de engine met
 -- artist_repeat_window_tracks, niet deze SQL.
@@ -50,15 +53,16 @@ base_eligible as (
         t.id,
         coalesce(pa.name, '') as primary_artist,
         tp.lastPlayed as last_played,
+        -- WAARDERING = SPEELFREQUENTIE (zie WAARDERING_POOLS.md, tabel A)
         case
-            when coalesce(tp.rating, 0) >= 100 then 2.00
-            when coalesce(tp.rating, 0) >= 90  then 1.80
-            when coalesce(tp.rating, 0) >= 80  then 1.60
-            when coalesce(tp.rating, 0) >= 70  then 1.40
-            when coalesce(tp.rating, 0) >= 60  then 1.20
-            when coalesce(tp.rating, 0) >= 50  then 1.00
-            when coalesce(tp.rating, 0) >= 40  then 0.80
-            else 0.60
+            when coalesce(tp.rating, 0) >= 100 then 4.00
+            when coalesce(tp.rating, 0) >= 90  then 2.20
+            when coalesce(tp.rating, 0) >= 80  then 1.25
+            when coalesce(tp.rating, 0) >= 70  then 0.60
+            when coalesce(tp.rating, 0) >= 60  then 0.35
+            when coalesce(tp.rating, 0) >= 50  then 0.12
+            when coalesce(tp.rating, 0) >= 40  then 0.04
+            else 0.04
         end * case
             when coalesce(tp.playCount, 0) = 0 then 1.20
             when coalesce(tp.playCount, 0) <= 5 then 1.10
@@ -66,7 +70,17 @@ base_eligible as (
             when coalesce(tp.playCount, 0) <= 50 then 0.92
             when coalesce(tp.playCount, 0) <= 100 then 0.85
             else 0.75
-        end as selection_weight
+        end as selection_weight,
+        -- Adempauze per waarderingspool.
+        case
+            when coalesce(tp.rating, 0) >= 100 then 10800
+            when coalesce(tp.rating, 0) >= 90  then 18000
+            when coalesce(tp.rating, 0) >= 80  then 28800
+            when coalesce(tp.rating, 0) >= 70  then 432000
+            when coalesce(tp.rating, 0) >= 60  then 86400
+            when coalesce(tp.rating, 0) >= 50  then 691200
+            else 1814400
+        end as tier_cooldown
     from tracks t
     left join tracks_persistent tp on tp.urlmd5 = t.urlmd5
     left join contributors pa on pa.id = t.primary_artist
@@ -86,7 +100,7 @@ eligible as (
     select *
     from base_eligible
     where last_played is null
-       or last_played < (cast(strftime('%s', 'now') as integer) - 86400)
+       or last_played < (cast(strftime('%s', 'now') as integer) - tier_cooldown)
 ),
 eligible_pool as (
     select *

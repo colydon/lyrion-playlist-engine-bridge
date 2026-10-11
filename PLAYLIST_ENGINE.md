@@ -298,6 +298,12 @@ stop logging.
 
 **Notes**
 
+- The SQL is the single source of truth for how often a track may be played: the
+  rating is a playback-frequency, not a preference. See
+  [WAARDERING_POOLS.md](WAARDERING_POOLS.md) for the rating pools, the weights per
+  table (day/evening), the cooldowns and the seasonal exceptions.
+- Measure the real mix with `python3 tools/rating_mix_report.py --samples 20`.
+
 - The engine is the source of truth for managed sessions and endless refill.
 - The LMS bridge is only a launcher.
 - Seasonal rules such as Kerst and Sinterklaas remain best kept in SQL.

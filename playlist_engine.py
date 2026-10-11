@@ -17,7 +17,11 @@ from urllib import error, parse, request
 
 
 LOGGER = logging.getLogger("playlist-engine")
-SQL_COMMENT_RE = re.compile(r"^\s*--.*$", re.MULTILINE)
+# Comments are stripped before the SQL is flattened onto a single line. Both
+# whole-line comments and trailing ("inline") comments must go: after flattening
+# a stray "--" would comment out the rest of the query. The playlist SQL never
+# contains "--" inside a string literal.
+SQL_COMMENT_RE = re.compile(r"--[^\n]*", re.MULTILINE)
 SQL_WHITESPACE_RE = re.compile(r"\s+")
 
 

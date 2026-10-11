@@ -21,6 +21,14 @@
 -- Normal mix target:
 -- Hits 6.0%, Oldies 18.0%, Other 76.0%
 --
+-- Waarderingsmodel (zie WAARDERING_POOLS.md, tabel B "avond/rustig"):
+-- ook 's avonds bepaalt de rating de speelfrequentie en speelt een hogere
+-- rating vaker, maar de sprongen zijn kleiner dan overdag. Daardoor komt de
+-- 2,5*-pool (vooral oldies) in de avond duidelijk vaker langs dan overdag,
+-- zonder dat die de hits inhaalt.
+--   5,0* = 3.00   4,5* = 1.70   4,0* = 1.00   3,5* = 0.70
+--   3,0* = 0.55   2,5* = 0.30   2,0* = 0.08
+--
 -- Additional AvondMix rules:
 -- - no Party tracks
 -- - no Fout tracks
@@ -108,20 +116,33 @@ base_eligible as (
         case
             when coalesce(gf.is_sinterklaas, 0) = 1 and s.sinterklaas_share > 0 then 'Sinterklaas'
             when coalesce(gf.is_christmas, 0) = 1 and s.christmas_share > 0 then 'Christmas'
-            when coalesce(gf.is_hit, 0) = 1 then 'Hits'
+            -- Hits-pool is rating-gedreven (vanaf 4,0*), niet alleen genre.
+            when coalesce(gf.is_hit, 0) = 1 or coalesce(tp.rating, 0) >= 80 then 'Hits'
             when coalesce(gf.is_oldies, 0) = 1 then 'Oldies'
             else 'Other'
         end as category,
+        -- WAARDERING = SPEELFREQUENTIE (zie WAARDERING_POOLS.md, tabel B "avond/rustig")
         case
-            when coalesce(tp.rating, 0) >= 100 then 0.40
-            when coalesce(tp.rating, 0) >= 90  then 0.55
-            when coalesce(tp.rating, 0) >= 80  then 0.85
-            when coalesce(tp.rating, 0) >= 70  then 1.40
-            when coalesce(tp.rating, 0) >= 60  then 1.20
-            when coalesce(tp.rating, 0) >= 50  then 1.00
-            when coalesce(tp.rating, 0) >= 40  then 0.30
-            else 0.45
+            when coalesce(tp.rating, 0) >= 100 then 3.00
+            when coalesce(tp.rating, 0) >= 90  then 1.70
+            when coalesce(tp.rating, 0) >= 80  then 1.00
+            when coalesce(tp.rating, 0) >= 70  then 0.70
+            when coalesce(tp.rating, 0) >= 60  then 0.55
+            when coalesce(tp.rating, 0) >= 50  then 0.30
+            when coalesce(tp.rating, 0) >= 40  then 0.08
+            else 0.05
         end as rating_weight,
+        -- Adempauze per pool. In de avond mogen 2,5*-nummers (oldies) gewoon
+        -- dezelfde dag terugkomen, overdag is dat bewust veel langer.
+        case
+            when coalesce(tp.rating, 0) >= 100 then 10800
+            when coalesce(tp.rating, 0) >= 90  then 18000
+            when coalesce(tp.rating, 0) >= 80  then 28800
+            when coalesce(tp.rating, 0) >= 70  then 432000
+            when coalesce(tp.rating, 0) >= 60  then 86400
+            when coalesce(tp.rating, 0) >= 50  then 86400
+            else 1814400
+        end as tier_cooldown,
         case
             when coalesce(tp.playCount, 0) = 0 then 1.30
             when coalesce(tp.playCount, 0) <= 5 then 1.15
@@ -190,10 +211,11 @@ eligible as (
     where
         case
             when is_sinterklaas = 1 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 86400)
-            when is_christmas = 1 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 86400)
-            when category = 'Hits' then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 18000)
-            when category = 'Oldies' then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 864000)
-            else last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 86400)
+            when is_christmas = 1 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - tier_cooldown)
+            -- Oldies zijn in de avond juist welkom: korte pauze in plaats van de
+            -- lange dagpauze uit DagMix.
+            when category = 'Oldies' then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 86400)
+            else last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - tier_cooldown)
         end
 ),
 eligible_pool as (

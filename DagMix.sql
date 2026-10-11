@@ -30,6 +30,15 @@
 -- They can still occur naturally through rating weight, with extra cooldowns
 -- for Oldies and Fout to avoid over-rotation.
 --
+-- Waarderingsmodel (zie WAARDERING_POOLS.md):
+-- de rating bepaalt de speelfrequentie, niet hoe leuk een nummer gevonden
+-- wordt. Binnen een categorie geldt tabel A "hits voorop":
+--   5,0* speelt duidelijk het vaakst, daarna 4,5*, daarna 4,0* (de hits van
+--   nu, samen meestal zo'n 50 nummers), dan 3,5* (ex-hits), dan de grote
+--   3,0*-bulk, dan 2,5* (overdag laag) en tot slot 2,0* als verrassing.
+-- De categorieverdeling hierboven houdt de hits ook als groep op 35% van de
+-- selecties, hoe hard de 2,5*- en 3,0*-pools ook groeien.
+--
 -- IMPORTANT:
 -- Custom Skip primary filter switching is intentional here.
 -- Keep the normal defaultfilterset.cs.xml with Kerst 100%.
@@ -108,19 +117,43 @@ base_eligible as (
         case
             when coalesce(gf.is_sinterklaas, 0) = 1 and s.sinterklaas_share > 0 then 'Sinterklaas'
             when coalesce(gf.is_christmas, 0) = 1 and s.christmas_share > 0 then 'Christmas'
-            when coalesce(gf.is_hit, 0) = 1 then 'Hits'
+            -- De hits-pool is rating-gedreven: alles vanaf 4,0* hoort bij de hits
+            -- van dit moment, ook als het niet het genre Hits heeft. Zo blijft het
+            -- kloppen wanneer er opnieuw beoordeeld wordt.
+            when coalesce(gf.is_hit, 0) = 1 or coalesce(tp.rating, 0) >= 80 then 'Hits'
             else 'Other'
         end as category,
+        -- WAARDERING = SPEELFREQUENTIE (zie WAARDERING_POOLS.md, tabel A "hits voorop")
+        -- De rating zegt niet hoe leuk een nummer is, maar hoe vaak het langs mag
+        -- komen. De sprongen tussen de pools zijn bewust groot:
+        --   5,0* = 4.00  de hits van nu, duidelijk het vaakst
+        --   4,5* = 2.20
+        --   4,0* = 1.25
+        --   3,5* = 0.60  ex-hits: vaker dan de bulk, maar geen hit meer
+        --   3,0* = 0.35  best of the rest (grootste pool, groeit door)
+        --   2,5* = 0.12  oldies/rustig, overdag bewust laag
+        --   2,0* = 0.04  sporadische verrassing
         case
-            when coalesce(tp.rating, 0) >= 100 then 2.10
-            when coalesce(tp.rating, 0) >= 90  then 1.95
-            when coalesce(tp.rating, 0) >= 80  then 1.80
-            when coalesce(tp.rating, 0) >= 70  then 1.50
-            when coalesce(tp.rating, 0) >= 60  then 0.45
+            when coalesce(tp.rating, 0) >= 100 then 4.00
+            when coalesce(tp.rating, 0) >= 90  then 2.20
+            when coalesce(tp.rating, 0) >= 80  then 1.25
+            when coalesce(tp.rating, 0) >= 70  then 0.60
+            when coalesce(tp.rating, 0) >= 60  then 0.35
             when coalesce(tp.rating, 0) >= 50  then 0.12
-            when coalesce(tp.rating, 0) >= 40  then 0.03
-            else 0.20
+            when coalesce(tp.rating, 0) >= 40  then 0.04
+            else 0.05
         end as rating_weight,
+        -- Minimale tijd tussen twee draaibeurten, per waarderingspool. De hits
+        -- mogen snel terugkomen, de bulk heeft een lange adempauze.
+        case
+            when coalesce(tp.rating, 0) >= 100 then 10800
+            when coalesce(tp.rating, 0) >= 90  then 18000
+            when coalesce(tp.rating, 0) >= 80  then 28800
+            when coalesce(tp.rating, 0) >= 70  then 432000
+            when coalesce(tp.rating, 0) >= 60  then 86400
+            when coalesce(tp.rating, 0) >= 50  then 691200
+            else 1814400
+        end as tier_cooldown,
         case
             when coalesce(tp.playCount, 0) = 0 then 1.30
             when coalesce(tp.playCount, 0) <= 5 then 1.15
@@ -180,11 +213,14 @@ eligible as (
     where
         case
             when is_sinterklaas = 1 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 86400)
-            when is_christmas = 1 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 86400)
-            when is_fout = 1 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 15724800)
+            when is_christmas = 1 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - tier_cooldown)
+            -- Fout mag sporadisch terugkomen, MAAR een fout nummer dat (bijna)
+            -- een hit is, gedraagt zich als een hit: die mag overdag gewoon
+            -- langskomen. Alleen in de avondmix blijven fout nummers buiten beeld.
+            when is_fout = 1 and rating < 80 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 1814400)
+            -- Oldies overdag bewust rustig: in de avondmix komen ze juist vaker.
             when is_oldies = 1 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 1209600)
-            when category = 'Hits' then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 18000)
-            else last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 86400)
+            else last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - tier_cooldown)
         end
 ),
 eligible_pool as (

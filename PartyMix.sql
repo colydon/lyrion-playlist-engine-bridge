@@ -15,8 +15,9 @@
 --   TEMPO Fast of Very Fast, of een hoge BPM vanaf 122 zolang het nummer niet
 --   als Slow/Very Slow staat getagd. Die BPM-grens geldt ook als er geen
 --   TEMPO-tag aanwezig is.
--- - Rating blijft bepalend: hogere rating wordt duidelijk vaker afgespeeld.
--- - Een milde tempo-weging duwt richting fast/very fast en dempt slow, maar
+-- - Rating blijft bepalend: hogere rating wordt duidelijk vaker afgespeeld
+--   (zie WAARDERING_POOLS.md, tabel A "hits voorop").
+-- - Een mild tempo-weging duwt richting fast/very fast en dempt slow, maar
 --   weegt nooit zwaarder dan een ratingverschil.
 --
 -- Altijd uitgesloten:
@@ -24,8 +25,11 @@
 -- - Live, Karaoke, Kinderliedjes en Kindermuziek (permanente exclusions).
 -- - Alles onder 2 sterren.
 --
--- Cooldown:
--- Hits 5 uur, Party 24 uur, Oldies 14 dagen, Fout 182 dagen.
+-- Cooldown (per waarderingspool, zie tier_cooldown):
+-- 5,0* 3 uur, 4,5* 5 uur, 4,0* 8 uur, 3,5* 5 dagen, 3,0* 24 uur,
+-- 2,5* 8 dagen, 2,0* 21 dagen, Oldies 14 dagen.
+-- Een fout nummer vanaf 4,0* volgt gewoon zijn pool; de rest blijft
+-- uitzondering (21 dagen).
 --
 -- PartyMix heeft geen seizoens- en geen dag/avondlogica: het is altijd
 -- hetzelfde opzwepende profiel.
@@ -73,16 +77,27 @@ base_eligible as (
             when coalesce(gf.is_party, 0) = 1 then 'Party'
             else 'Hits'
         end as category,
+        -- WAARDERING = SPEELFREQUENTIE (zie WAARDERING_POOLS.md, tabel A "hits voorop")
         case
-            when coalesce(tp.rating, 0) >= 100 then 2.10
-            when coalesce(tp.rating, 0) >= 90  then 1.95
-            when coalesce(tp.rating, 0) >= 80  then 1.80
-            when coalesce(tp.rating, 0) >= 70  then 1.50
-            when coalesce(tp.rating, 0) >= 60  then 0.45
+            when coalesce(tp.rating, 0) >= 100 then 4.00
+            when coalesce(tp.rating, 0) >= 90  then 2.20
+            when coalesce(tp.rating, 0) >= 80  then 1.25
+            when coalesce(tp.rating, 0) >= 70  then 0.60
+            when coalesce(tp.rating, 0) >= 60  then 0.35
             when coalesce(tp.rating, 0) >= 50  then 0.12
-            when coalesce(tp.rating, 0) >= 40  then 0.03
-            else 0.20
+            when coalesce(tp.rating, 0) >= 40  then 0.04
+            else 0.05
         end as rating_weight,
+        -- Adempauze per waarderingspool (tabel A).
+        case
+            when coalesce(tp.rating, 0) >= 100 then 10800
+            when coalesce(tp.rating, 0) >= 90  then 18000
+            when coalesce(tp.rating, 0) >= 80  then 28800
+            when coalesce(tp.rating, 0) >= 70  then 432000
+            when coalesce(tp.rating, 0) >= 60  then 86400
+            when coalesce(tp.rating, 0) >= 50  then 691200
+            else 1814400
+        end as tier_cooldown,
         case
             when coalesce(tp.playCount, 0) = 0 then 1.30
             when coalesce(tp.playCount, 0) <= 5 then 1.15
@@ -150,10 +165,11 @@ eligible as (
     from base_eligible
     where
         case
-            when is_fout = 1 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 15724800)
+            -- Een fout nummer dat (bijna) een hit is, mag gewoon langskomen;
+            -- de rest blijft een uitzondering.
+            when is_fout = 1 and rating < 80 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 1814400)
             when is_oldies = 1 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 1209600)
-            when category = 'Hits' then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 18000)
-            else last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 86400)
+            else last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - tier_cooldown)
         end
 ),
 eligible_pool as (

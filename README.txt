@@ -300,3 +300,14 @@ Daarna schrijft de bridge elk playlist-commando (met parameters, bron en speler)
 elke DSTM-vraag naar /var/log/slimserver/server.log. Uitzetten:
     rm /tmp/playlist_engine_bridge_debug
 
+WAARDERING = SPEELFREQUENTIE
+De rating zegt niet hoe leuk een nummer is, maar hoe vaak het langs mag komen. Alle
+playlists werken daarom met pools: 5,0* / 4,5* / 4,0* zijn de hits van nu (samen
+meestal zo'n 50 nummers), dan 3,5* (ex-hits), dan de grote 3,0*-basis, dan 2,5*
+(oldies/rustig, overdag laag en 's avonds juist vaak) en 2,0* als verrassing.
+Binnen de pools geldt een vaste tabel; zie WAARDERING_POOLS.md voor de gewichten,
+cooldowns, uitzonderingen (kerst, sinterklaas, fout) en het onderhoud.
+
+Meten wat er echt uit komt:
+    python3 tools/rating_mix_report.py --samples 20
+
