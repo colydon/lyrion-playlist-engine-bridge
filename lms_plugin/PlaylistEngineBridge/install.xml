@@ -3,11 +3,13 @@
   <id>8d8f0c54-3f18-4f6b-bf6a-0e7c44e9f401</id>
   <name>Playlist Engine Bridge</name>
   <module>Plugins::PlaylistEngineBridge::Plugin</module>
-  <version>0.1.0</version>
+  <version>0.1.1</version>
   <description>Launch custom SQL-driven playlists from LMS.</description>
   <creator>Rick Luke</creator>
   <defaultState>enabled</defaultState>
   <playerMenu>BROWSE_MUSIC</playerMenu>
+  <!-- Vertel de DSTM-plugin (Don't Stop The Music) dat wij het afspelen kunnen overnemen. -->
+  <canConflictWithDSTM>1</canConflictWithDSTM>
   <targetApplication>
     <id>Lyrion Music Server</id>
     <minVersion>8.0</minVersion>

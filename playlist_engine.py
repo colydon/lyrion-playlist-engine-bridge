@@ -451,8 +451,11 @@ class LmsClient:
             ) from exc
 
     def list_players(self) -> List[Dict[str, Any]]:
-        result = self._request("", ["players", 0, 100])
-        return list(result.get("result", {}).get("players_loop", []))
+        response = self._request("", ["players", 0, 100])
+        payload = response.get("result") if isinstance(response, dict) else None
+        if not isinstance(payload, dict):
+            raise RequestError("LMS returned no usable player list", HTTPStatus.BAD_GATEWAY)
+        return list(payload.get("players_loop", []))
 
     def resolve_player(self, player_name: Optional[str], player_id: Optional[str]) -> Dict[str, Any]:
         players = self.list_players()
@@ -474,8 +477,17 @@ class LmsClient:
         raise RequestError("Could not resolve LMS player.", HTTPStatus.NOT_FOUND)
 
     def status(self, player_id: str) -> Dict[str, Any]:
-        result = self._request(player_id, ["status", 0, 500, "tags:cgABbehldiqtyrSSuoKLNJ"])
-        return dict(result.get("result", {}))
+        response = self._request(player_id, ["status", 0, 500, "tags:cgABbehldiqtyrSSuoKLNJ"])
+        # LMS answers an unknown or reconnecting player with "result": [] instead of
+        # an object. Treat that as a transient LMS failure (like any other bad
+        # response) so that one player can never abort the whole maintenance pass.
+        payload = response.get("result") if isinstance(response, dict) else None
+        if not isinstance(payload, dict):
+            raise RequestError(
+                f"LMS returned no usable status for {player_id}",
+                HTTPStatus.BAD_GATEWAY,
+            )
+        return dict(payload)
 
     def power_on(self, player_id: str) -> None:
         self._request(player_id, ["power", 1])

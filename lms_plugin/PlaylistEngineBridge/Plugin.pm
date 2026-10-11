@@ -10,11 +10,13 @@ use File::Spec::Functions qw(catfile);
 use HTTP::Tiny;
 use JSON::PP qw(decode_json encode_json);
 use URI::Escape qw(uri_escape_utf8);
+use POSIX ();
 use Slim::Control::Jive;
 use Slim::Control::Request;
 use Slim::Web::HTTP;
 use Slim::Web::Pages;
 use Slim::Utils::Log;
+use Slim::Utils::Timers;
 
 my $log = Slim::Utils::Log->addLogCategory({
 	category     => 'plugin.playlistenginebridge',
@@ -28,7 +30,25 @@ my %DEFAULT_CONFIG = (
 	menu_title      => 'Custom Playlists',
 	quick_launch_playlist => '',
 	quick_launch_title    => '',
+	suppress_dstm_when_engine_active => 1,
 );
+
+# --- Don't Stop The Music (DSTM) -------------------------------------------------
+# LMS roept disableDSTM() aan voor plugins die <canConflictWithDSTM>1</canConflictWithDSTM>
+# in hun install.xml hebben. Zolang de engine een sessie heeft voor een speler zeggen we
+# "nee": DSTM blijft er dan van af. Zodra de sessie weg is, doet DSTM weer gewoon mee.
+# De sessielijst wordt door een hulpproces opgehaald (nooit blokkerend voor LMS) en in
+# een klein cachebestand gezet dat disableDSTM() razendsnel kan lezen.
+my $SESSION_CACHE         = '/tmp/playlist_engine_bridge_sessions.json';
+my $SESSION_CACHE_MAX_AGE = 120;   # seconden; ouder betekent: engine onbereikbaar -> DSTM weer toestaan
+my $SESSION_POLL_SECONDS  = 20;
+my $SESSION_POLL_START    = 5;
+
+my $COMMAND_DEBUG_FLAG = '/tmp/playlist_engine_bridge_debug';   # aanwezig bestand = playlist-commando's loggen
+
+my $suppress_dstm = 1;
+my $managed_key   = '';
+my $cache_stale   = 0;
 
 
 sub getDisplayName {
@@ -101,6 +121,13 @@ sub initPlugin {
 	Slim::Control::Request::addDispatch(['playlistenginebridge', 'browse'], [1, 0, 1, \&cliBrowseHandler]);
 	Slim::Control::Request::addDispatch(['playlistenginebridge', 'start'], [1, 1, 1, \&cliStartHandler]);
 	Slim::Control::Request::addDispatch(['playlistenginebridge', 'stop'], [1, 0, 1, \&cliStopHandler]);
+
+	$suppress_dstm = $config->{suppress_dstm_when_engine_active} ? 1 : 0;
+	if ($suppress_dstm) {
+		$log->info('DSTM wordt onderdrukt zolang de engine een sessie heeft voor een speler.');
+	}
+	Slim::Control::Request::subscribe(\&logPlaylistCommand, [['playlist']]);
+	_startSessionPolling();
 
 	$class->SUPER::initPlugin();
 }
@@ -354,10 +381,10 @@ sub _render_menu {
 
 
 sub _engine_request {
-	my ($method, $path, $payload) = @_;
+	my ($method, $path, $payload, $timeout) = @_;
 	my $config = _load_config();
 	my $url    = $config->{engine_base_url} . $path;
-	my $http   = HTTP::Tiny->new(timeout => 60);
+	my $http   = HTTP::Tiny->new(timeout => ($timeout || 60));
 	my %headers = ('Content-Type' => 'application/json');
 
 	if ($config->{api_token}) {
@@ -424,6 +451,170 @@ sub _schedule_engine_request {
 		$log->warn('Scheduled engine request returned an error for ' . ($description || $path) . ': ' . ($response->{error} || 'unknown error'));
 	}
 	exit 0;
+}
+
+
+sub disableDSTM {
+	my ($class, $client) = @_;
+
+	return 0 unless $suppress_dstm;
+	return 0 unless $client;
+
+	my $managed = $class->isEngineManaged($client) ? 1 : 0;
+
+	if (-e $COMMAND_DEBUG_FLAG) {
+		$log->info(sprintf(
+			'DSTM-vraag voor %s (%s): engine actief = %s',
+			(eval { $client->name } || '?'),
+			(eval { $client->id } || '?'),
+			($managed ? 'ja, DSTM blijft eraf' : 'nee, DSTM mag bijspringen'),
+		));
+	}
+
+	return $managed;
+}
+
+
+sub isEngineManaged {
+	my ($class, $client) = @_;
+
+	my $sessions = _readSessionCache();
+	return 0 unless $sessions && ref $sessions->{players} eq 'ARRAY' && scalar @{ $sessions->{players} };
+
+	my %managed = map { lc($_) => 1 } grep { defined $_ && $_ ne '' } @{ $sessions->{players} };
+
+	# Groepsleden en groepsmeesters allebei accepteren.
+	for my $candidate ($client, (eval { $client->master })) {
+		next unless $candidate && ref $candidate;
+		my $id = eval { $candidate->id };
+		return 1 if $id && $managed{ lc $id };
+	}
+
+	return 0;
+}
+
+
+sub _startSessionPolling {
+	return unless $suppress_dstm;
+	Slim::Utils::Timers::setTimer(undef, time() + $SESSION_POLL_START, \&pollEngineSessions);
+}
+
+
+sub pollEngineSessions {
+	_refreshSessionCache() if $suppress_dstm;
+	_reportManagedPlayers();
+	Slim::Utils::Timers::setTimer(undef, time() + $SESSION_POLL_SECONDS, \&pollEngineSessions);
+}
+
+
+sub _reportManagedPlayers {
+	my $sessions = _readSessionCache();
+	my $stale    = $sessions ? 0 : 1;
+	my $key      = join(',', ($sessions && ref $sessions->{players} eq 'ARRAY') ? sort @{ $sessions->{players} } : ());
+
+	if ($stale && !$cache_stale) {
+		$log->warn('Geen verse sessielijst van de playlist-engine; DSTM mag weer bijspringen.');
+	}
+	elsif (!$stale && $cache_stale) {
+		$log->info('Sessielijst van de playlist-engine is weer actueel.');
+	}
+	$cache_stale = $stale;
+
+	return if $key eq $managed_key;
+	$managed_key = $key;
+
+	$log->info('Engine-sessies: ' . ($key || '(geen)'));
+}
+
+
+# Haalt de sessielijst op in een hulpproces. Mislukt dat, dan blijft het cachebestand
+# staan en veroudert het vanzelf, zodat DSTM na $SESSION_CACHE_MAX_AGE weer gewoon werkt.
+sub _refreshSessionCache {
+	my $pid = fork();
+	if (!defined $pid) {
+		$log->warn('Kon geen hulpproces starten voor sessieverversing.');
+		return;
+	}
+
+	return if $pid;
+
+	select(undef, undef, undef, 0.05);
+
+	my $response = eval { _engine_request('GET', '/api/sessions', undef, 5) };
+
+	if ($response && $response->{ok} && ref $response->{sessions} eq 'ARRAY') {
+		my $players = [ map { $_->{player_id} } grep { ref $_ eq 'HASH' && $_->{player_id} } @{ $response->{sessions} } ];
+		_writeSessionCache($players);
+	}
+
+	# _exit(): geen END-blokken of DESTROY-rommel in een hulpproces van LMS.
+	POSIX::_exit(0);
+}
+
+
+sub _writeSessionCache {
+	my ($players) = @_;
+	my $path    = $SESSION_CACHE . '.' . $$;
+	my $payload = encode_json({ players => $players, updated => time() });
+
+	my $handle;
+	if (!open($handle, '>', $path)) {
+		$log->warn('Kon ' . $path . ' niet schrijven: ' . $!);
+		return;
+	}
+
+	print {$handle} $payload;
+	close $handle;
+
+	if (!rename($path, $SESSION_CACHE)) {
+		$log->warn('Kon ' . $path . ' niet verplaatsen naar ' . $SESSION_CACHE . ': ' . $!);
+		unlink $path;
+	}
+}
+
+
+sub _readSessionCache {
+	my @info = stat($SESSION_CACHE);
+	return undef unless @info && $info[9] && (time() - $info[9]) <= $SESSION_CACHE_MAX_AGE;
+
+	open(my $handle, '<', $SESSION_CACHE) or return undef;
+	my $raw = do { local $/ = undef; <$handle> };
+	close $handle;
+
+	my $decoded = eval { decode_json($raw) };
+	return (ref $decoded eq 'HASH') ? $decoded : undef;
+}
+
+
+# Diagnose: alleen actief als /tmp/playlist_engine_bridge_debug bestaat. Zo kan er
+# zonder LMS-herstart (of code-wijziging) meegelogd worden wie de queue aanpast.
+sub logPlaylistCommand {
+	my $request = shift;
+
+	# Zonder markeerbestand doet deze functie niets (geen ruis in het log).
+	return unless -e $COMMAND_DEBUG_FLAG;
+
+	my $client = eval { $request->client };
+	my @params;
+
+	for my $name (qw(_what _listref listref _index _url)) {
+		my $value = eval { $request->getParam($name) };
+		next unless defined $value;
+
+		if (ref $value eq 'ARRAY') {
+			$value = sprintf('[%s, n=%d]', ($value->[0] // '?'), scalar @$value);
+		}
+
+		push @params, $name . '=' . (ref $value ? '(ref)' : $value);
+	}
+
+	$log->info(sprintf(
+		'playlist-commando %s%s, bron=%s%s',
+		(eval { $request->getRequestString } || '?'),
+		(@params ? ' [' . join(' ', @params) . ']' : ''),
+		(eval { $request->source } || 'onbekend'),
+		($client ? ', speler=' . $client->name . ' (' . $client->id . ')' : ''),
+	));
 }
 
 

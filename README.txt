@@ -274,3 +274,29 @@ Optional if you still want the DagMix-specific Custom Skip filter before queuein
 
 This bypasses DynamicPlaylists4/DynamicMix entirely and is the simplest route
 if the SQL itself is correct but the plugin stack remains unreliable.
+
+DON'T STOP THE MUSIC
+LMS vult zelf de queue aan als die leegloopt: "Don't Stop The Music" (DSTM). Dat is
+handig als iemand losse liedjes, een album of een gewone playlist afspeelt, maar het
+zit de engine in de weg zodra een engine-playlist loopt.
+
+De bridge regelt dat nu automatisch:
+- zolang de engine een sessie heeft voor die speler houdt DSTM zich stil;
+- zodra die sessie weg is (playlist gestopt of de engine is onbereikbaar) doet DSTM
+  weer gewoon mee;
+- er worden geen voorkeuren van spelers of van jou aangepast.
+
+Techniek: <canConflictWithDSTM> in install.xml plus disableDSTM() in Plugin.pm, de
+officiele hook die LMS hiervoor heeft. De bridge haalt elke 20 seconden /api/sessions
+op en onthoudt welke spelers de engine beheert. Is de engine langer dan 120 seconden
+onbereikbaar, dan valt DSTM weer bij (beter dan stilte).
+
+Uitzetten: zet "suppress_dstm_when_engine_active": false in bridge_config.json en
+herstart LMS.
+
+ZIEN WIE DE QUEUE AANPAST (diagnose)
+    touch /tmp/playlist_engine_bridge_debug
+Daarna schrijft de bridge elk playlist-commando (met parameters, bron en speler) plus
+elke DSTM-vraag naar /var/log/slimserver/server.log. Uitzetten:
+    rm /tmp/playlist_engine_bridge_debug
+

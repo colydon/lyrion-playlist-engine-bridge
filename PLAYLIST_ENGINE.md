@@ -267,6 +267,35 @@ Because the selected LMS player is passed as `player_id`, you do not need separa
 8. Test the LMS menu button.
 9. Test the same start action from Homey for a second player.
 
+**Don't Stop The Music**
+
+LMS has a built-in `Don't Stop The Music` (DSTM) feature that keeps adding tracks when a
+queue runs out. That is useful when someone plays loose songs, a playlist or an album, but
+it competes with the engine once an engine playlist is running.
+
+The bridge therefore tells DSTM to stay away as long as the engine has a session for that
+player, and DSTM behaves normally again as soon as that session is gone:
+
+- `install.xml` declares `<canConflictWithDSTM>1</canConflictWithDSTM>`, the hook LMS
+  provides for exactly this situation.
+- `disableDSTM()` returns true while the engine reports a session for the player.
+- Every 20 seconds a helper process fetches `/api/sessions` and stores the managed player
+  ids in `/tmp/playlist_engine_bridge_sessions.json`. The helper never blocks the LMS main
+  loop, and `disableDSTM()` only reads that small file.
+- When the engine cannot be reached the cache expires after 120 seconds and DSTM is allowed
+  again, so DSTM becomes the fallback instead of leaving the house silent.
+- Set `suppress_dstm_when_engine_active` to `false` in `bridge_config.json` to disable this.
+
+**Logging Which Client Changes The Queue**
+
+To find out which component adds or removes queue entries, create this file:
+
+    touch /tmp/playlist_engine_bridge_debug
+
+The bridge then logs every `playlist` command that LMS executes, including its parameters and
+source, plus every DSTM question (`engine actief = ja/nee`), to the LMS log. Delete the file to
+stop logging.
+
 **Notes**
 
 - The engine is the source of truth for managed sessions and endless refill.
