@@ -311,3 +311,27 @@ cooldowns, uitzonderingen (kerst, sinterklaas, fout) en het onderhoud.
 Meten wat er echt uit komt:
     python3 tools/rating_mix_report.py --samples 20
 
+CASTBRIDGE: WEL mode=mp3, GEEN sample_rate
+Deze Pi heeft geen mp3-encoder en geen mp3-decoder: LMS heeft alleen de eigen
+binaries sox, flac, faad, mac en wvunpack. De muziekbibliotheek is volledig mp3
+(5200+ bestanden), waarvan een groot deel 48 kHz is.
+
+Daarom in /usr/local/slimserver/prefs/castbridge.xml:
+- wel <mode>mp3</mode> voor Kantoor, Beneden en Hele Huis (de Cast-groepen
+  accepteren geen flac; mp3 scheelt bovendien veel verkeer);
+- GEEN <sample_rate> erbij zetten. Met een geforceerde sample rate moet LMS elk
+  bestand dat niet 44,1 kHz is omrekenen, en dat kan zonder encoder niet:
+
+      Error: Couldn't create command line for mp3 playback for [file:///...]
+
+Het gevolg daarvan is dat het afspelen na één of twee nummers stopt: de volgende
+track kan niet geopend worden en de queue loopt leeg. Zonder <sample_rate> wordt
+elk mp3-bestand direct doorgestuurd en speelt alles.
+
+Controle:
+    grep -c "Couldn't create command line" /var/log/slimserver/server.log
+    # moet 0 blijven
+
+Bij twijfel de config terugzetten kan met:
+    /usr/local/slimserver/prefs/castbridge.xml.bak-20261011-rate
+
