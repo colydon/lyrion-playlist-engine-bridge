@@ -1,0 +1,8 @@
+{
+  "chat.tools.terminal.autoApprove": {
+    "/^/tmp/cti_ssh/rcp\\.sh /tmp/cti_ref/cast_gids\\.py tc@192\\.168\\.0\\.54:/tmp/cast_gids\\.py >/dev/null 2>&1; /tmp/cti_ssh/rsh\\.sh '/usr/local/bin/python3\\.11 /tmp/cast_gids\\.py' 2>&1 \\| tail -45$/": {
+      "approve": true,
+      "matchCommandLine": true
+    }
+  }
+}

@@ -311,22 +311,33 @@ cooldowns, uitzonderingen (kerst, sinterklaas, fout) en het onderhoud.
 Meten wat er echt uit komt:
     python3 tools/rating_mix_report.py --samples 20
 
-CASTBRIDGE: WEL mode=mp3, GEEN sample_rate
+CASTBRIDGE: WELKE SPELER WELKE MODUS
 Deze Pi heeft geen mp3-encoder en geen mp3-decoder: LMS heeft alleen de eigen
 binaries sox, flac, faad, mac en wvunpack. De muziekbibliotheek is volledig mp3
 (5200+ bestanden), waarvan een groot deel 48 kHz is.
 
-Daarom in /usr/local/slimserver/prefs/castbridge.xml:
-- wel <mode>mp3</mode> voor Kantoor, Beneden en Hele Huis (de Cast-groepen
-  accepteren geen flac; mp3 scheelt bovendien veel verkeer);
-- GEEN <sample_rate> erbij zetten. Met een geforceerde sample rate moet LMS elk
-  bestand dat niet 44,1 kHz is omrekenen, en dat kan zonder encoder niet:
+Instellingen in /usr/local/slimserver/prefs/castbridge.xml (14-10-2026):
 
-      Error: Couldn't create command line for mp3 playback for [file:///...]
+- Kantoor, Beneden, Hele Huis -> <mode>mp3</mode> + <sample_rate>96000</sample_rate>
+  Deze drie hadden last van de flac 96 kHz-stroom (Kantoor gaf http-fouten, de
+  Cast-groepen accepteren geen flac). mp3 wordt 1-op-1 doorgegeven.
+  Nadeel: een mp3-stroom heeft geen lengte, dus op een Nest Hub met scherm tonen
+  deze spelers geen voortgangsbalk en geen afstandsbediening.
 
-Het gevolg daarvan is dat het afspelen na één of twee nummers stopt: de volgende
-track kan niet geopend worden en de queue loopt leeg. Zonder <sample_rate> wordt
-elk mp3-bestand direct doorgestuurd en speelt alles.
+- Woonkamer, Slaapkamer, Keuken, TV, TV Slaapkamer -> <mode>flc</mode> +
+  <sample_rate>48000</sample_rate> (als default in het <common>-blok).
+  Flac draagt wel een lengte mee, dus het scherm toont de voortgangsbalk, de
+  eindtijd en de vorige/volgende-knoppen. 48000 in plaats van de oude 96000
+  halveert het verkeer.
+
+Regel: zet nooit een <sample_rate> die LAGER is dan de bron. Bij 44,1 kHz- en
+48 kHz-bestanden met een lagere doelwaarde moet LMS omrekenen, en dat kan zonder
+mp3-encoder niet:
+
+    Error: Couldn't create command line for mp3 playback for [file:///...]
+
+Gevolg: het afspelen stopt na een of twee nummers. 48000 of hoger is veilig;
+voor de mp3-spelers is 96000 de bewezen waarde.
 
 Controle:
     grep -c "Couldn't create command line" /var/log/slimserver/server.log
