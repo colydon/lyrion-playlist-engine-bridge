@@ -57,6 +57,7 @@ genre_flags as (
         gt.track,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',kerst,') > 0 then 1 else 0 end) as is_christmas,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',sinterklaas,') > 0 then 1 else 0 end) as is_sinterklaas,
+        max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',lounge,') > 0 then 1 else 0 end) as is_lounge,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',hits,') > 0 then 1 else 0 end) as is_hit,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',oldies,') > 0 then 1 else 0 end) as is_oldies,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',party,') > 0 then 1 else 0 end) as is_party,
@@ -181,6 +182,11 @@ base_eligible as (
             tp.rating >= 40
             or (s.sinterklaas_share > 0 and coalesce(gf.is_sinterklaas, 0) = 1)
         )
+        -- Lounge hoort alleen in SummerMix; in de andere mixen kwam het te
+        -- vaak langs. Handmatig queueen blijft gewoon mogelijk: dit is een
+        -- selectieregel, geen filter in LMS of Custom Skip.
+        and coalesce(gf.is_lounge, 0) = 0
+
         and coalesce(gf.is_permanent_exclusion, 0) = 0
         and dph.id is null
         and coalesce(gf.is_party, 0) = 0

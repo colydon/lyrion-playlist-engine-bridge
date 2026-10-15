@@ -118,6 +118,15 @@ lijst: de playlist valt nooit stil.
   fout-nummers altijd buiten beeld.
 - **Permanent uitgesloten** in elke playlist: Live, Karaoke, Kinderliedjes en
   Kindermuziek.
+- **Lounge** komt alleen in SummerMix voor. In alle andere mixen (DagMix, AvondMix,
+  PartyMix en alle themaplaylists) staat het genre uit, omdat het te vaak
+  terugkwam. In SummerMix is Lounge een **eigen categorie met een aandeel van
+  15%**: regelmatig aanwezig, maar nooit overheersend. Omdat het om een
+  _percentage_ gaat en niet om een vast aantal nummers, blijft die verhouding
+  ook kloppen als er in de toekomst veel meer lounge-nummers bijkomen: het
+  aandeel blijft 15% en elk afzonderlijk nummer wordt vanzelf zeldzamer.
+  Handmatig queueen blijft mogelijk: dit is een selectieregel in de SQL, geen
+  filter in LMS of Custom Skip.
 - **Tempo**: DagMix en SummerMix sluiten _Very Fast_ uit; in de avond vallen ook
   _Fast_ en nummers zonder TEMPO-tag met een hoge BPM af (AvondMix, SummerMix)
   of krijgen ze een laag gewicht (PartyMix, SummerMix).

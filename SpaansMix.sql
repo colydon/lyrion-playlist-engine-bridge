@@ -40,6 +40,7 @@ genre_flags as (
         gt.track,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',kerst,') > 0 then 1 else 0 end) as is_christmas,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',sinterklaas,') > 0 then 1 else 0 end) as is_sinterklaas,
+        max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',lounge,') > 0 then 1 else 0 end) as is_lounge,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',spaans,') > 0 then 1 else 0 end) as is_spaans,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',live,') > 0 then 1 else 0 end)
         + max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',karaoke,') > 0 then 1 else 0 end)
@@ -91,6 +92,11 @@ base_eligible as (
         t.audio = 1
         and t.secs >= 90
         and tp.rating >= 40
+        -- Lounge hoort alleen in SummerMix; in de andere mixen kwam het te
+        -- vaak langs. Handmatig queueen blijft gewoon mogelijk: dit is een
+        -- selectieregel, geen filter in LMS of Custom Skip.
+        and coalesce(gf.is_lounge, 0) = 0
+
         and coalesce(gf.is_permanent_exclusion, 0) = 0
         and coalesce(gf.is_sinterklaas, 0) = 0
         and coalesce(gf.is_christmas, 0) = 0

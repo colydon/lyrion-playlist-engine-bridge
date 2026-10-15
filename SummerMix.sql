@@ -35,7 +35,12 @@
 -- Dec 27-Nov 30: 0% Christmas
 --
 -- Normal mix target (buiten het seizoen):
--- Summer+Lounge 50.0%, Hits 25.0%, Other 25.0%
+-- Summer 35.0%, Lounge 15.0%, Hits 25.0%, Other 25.0%
+-- Lounge is expres een aparte, begrensde categorie: er komen in de toekomst
+-- steeds meer lounge-nummers bij, maar ze mogen de mix niet overnemen. Door het
+-- aandeel op 15% te houden blijven ze regelmatig langskomen zonder te
+-- overheersen; per nummer worden ze vanzelf zeldzamer naarmate de pool groeit.
+-- In alle andere mixen staat Lounge helemaal uit (zie WAARDERING_POOLS.md).
 --
 -- Waarderingsmodel: zie WAARDERING_POOLS.md (tabel A "hits voorop"). De rating
 -- bepaalt de speelfrequentie: 5,0* het vaakst, dan 4,5*, dan 4,0*, dan de
@@ -128,7 +133,8 @@ base_eligible as (
         case
             when coalesce(gf.is_sinterklaas, 0) = 1 and s.sinterklaas_share > 0 then 'Sinterklaas'
             when coalesce(gf.is_christmas, 0) = 1 and s.christmas_share > 0 then 'Christmas'
-            when coalesce(gf.is_summer, 0) = 1 or coalesce(gf.is_zomer, 0) = 1 or coalesce(gf.is_lounge, 0) = 1 then 'Summer'
+            when coalesce(gf.is_summer, 0) = 1 or coalesce(gf.is_zomer, 0) = 1 then 'Summer'
+            when coalesce(gf.is_lounge, 0) = 1 then 'Lounge'
             when coalesce(gf.is_hit, 0) = 1 or coalesce(tp.rating, 0) >= 80 then 'Hits'
             else 'Other'
         end as category,
@@ -272,7 +278,9 @@ category_targets as (
         case ct.category
             when 'Sinterklaas' then s.sinterklaas_share
             when 'Christmas'   then s.christmas_share
-            when 'Summer'      then max(0.0, 1.0 - s.sinterklaas_share - s.christmas_share) * 0.500
+            when 'Summer'      then max(0.0, 1.0 - s.sinterklaas_share - s.christmas_share) * 0.350
+            -- Lounge begrensd op 15%: regelmatig, maar nooit overheersend.
+            when 'Lounge'      then max(0.0, 1.0 - s.sinterklaas_share - s.christmas_share) * 0.150
             when 'Hits'        then max(0.0, 1.0 - s.sinterklaas_share - s.christmas_share) * 0.250
             else                    max(0.0, 1.0 - s.sinterklaas_share - s.christmas_share) * 0.250
         end as target_share
@@ -289,7 +297,8 @@ weighted as (
         e.*,
         case
             when sc.active_target_share > 0 then ct.target_share / sc.active_target_share
-            when e.category = 'Summer' then 0.500
+            when e.category = 'Summer' then 0.350
+            when e.category = 'Lounge' then 0.150
             when e.category = 'Hits'   then 0.250
             else                            0.250
         end as category_share,

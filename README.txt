@@ -311,6 +311,15 @@ cooldowns, uitzonderingen (kerst, sinterklaas, fout) en het onderhoud.
 Meten wat er echt uit komt:
     python3 tools/rating_mix_report.py --samples 20
 
+LOUNGE ALLEEN IN SUMMERMIX
+Het genre Lounge staat in alle mixen uit (DagMix, AvondMix, PartyMix en de
+themaplaylists). SummerMix heeft er een eigen categorie van 15%: regelmatig
+langskomen, maar nooit overheersend. Omdat het een percentage is en geen vast
+aantal nummers, blijft dat ook kloppen als er veel meer lounge-nummers bij komen
+(het aandeel blijft 15%, elk nummer wordt zeldzamer).
+Handmatig queueen kan gewoon: het is een selectieregel in de SQL, geen filter in
+LMS of Custom Skip. Aanpassen: `gf.is_lounge` in de betreffende .sql-bestanden.
+
 CASTBRIDGE: WELKE SPELER WELKE MODUS
 Deze Pi heeft geen mp3-encoder en geen mp3-decoder: LMS heeft alleen de eigen
 binaries sox, flac, faad, mac en wvunpack. De muziekbibliotheek is volledig mp3
