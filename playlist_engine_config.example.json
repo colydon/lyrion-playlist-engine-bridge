@@ -151,6 +151,15 @@
       "topup_count": 10,
       "low_watermark": 5
     },
+    "LUCARIXMix": {
+      "title": "LUCARIXMix",
+      "sql_file": "LUCARIXMix.sql",
+      "description": "LUCARIXMix: uitsluitend nummers van LUCARIX met korte cooldowns; kerst alleen van 15 november t/m 26 december.",
+      "initial_count": 12,
+      "topup_count": 8,
+      "low_watermark": 4,
+      "artist_repeat_window_tracks": 0
+    },
     "KerstMix": {
       "title": "KerstMix",
       "sql_file": "KerstMix.sql",

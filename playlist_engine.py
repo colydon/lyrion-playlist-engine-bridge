@@ -85,6 +85,7 @@ class PlaylistDefinition:
     low_watermark: int
     description: str
     start_with_genre: str
+    artist_repeat_window_tracks: Optional[int] = None
     routing_windows: List[RoutingWindow] = field(default_factory=list)
 
     def to_api_payload(self) -> Dict[str, Any]:
@@ -98,6 +99,7 @@ class PlaylistDefinition:
             "low_watermark": self.low_watermark,
             "description": self.description,
             "start_with_genre": self.start_with_genre,
+            "artist_repeat_window_tracks": self.artist_repeat_window_tracks,
             "routing_targets": [window.playlist for window in self.routing_windows],
         }
 
@@ -181,6 +183,9 @@ class EngineConfig:
                 low_watermark=int(merged_config.get("low_watermark", default_low_watermark)),
                 description=str(merged_config.get("description", "")).strip(),
                 start_with_genre=str(merged_config.get("start_with_genre", "")).strip(),
+                artist_repeat_window_tracks=cls._parse_optional_int(
+                    merged_config.get("artist_repeat_window_tracks")
+                ),
                 routing_windows=routing_windows,
             )
 
@@ -201,6 +206,9 @@ class EngineConfig:
                     low_watermark=int(merged_config.get("low_watermark", default_low_watermark)),
                     description=str(merged_config.get("description", "")).strip(),
                     start_with_genre=str(merged_config.get("start_with_genre", "")).strip(),
+                    artist_repeat_window_tracks=cls._parse_optional_int(
+                        merged_config.get("artist_repeat_window_tracks")
+                    ),
                     routing_windows=routing_windows,
                 )
 
@@ -235,6 +243,15 @@ class EngineConfig:
             skip_rules=list(raw.get("skip_rules", [])),
             playlists=playlist_catalog,
         )
+
+    @staticmethod
+    def _parse_optional_int(value: Any) -> Optional[int]:
+        if value is None:
+            return None
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def _parse_clock_minutes(value: str) -> int:
@@ -706,8 +723,12 @@ class TrackSelector:
     def _artist_ids(track: Dict[str, Any]) -> set:
         return {int(artist_id) for artist_id in track.get("artist_ids", []) if str(artist_id).isdigit()}
 
-    def _shares_recent_artist(self, track: Dict[str, Any], recent_tracks: Sequence[Dict[str, Any]]) -> bool:
-        artist_window = self.config.artist_repeat_window_tracks
+    def _shares_recent_artist(
+        self,
+        track: Dict[str, Any],
+        recent_tracks: Sequence[Dict[str, Any]],
+        artist_window: int,
+    ) -> bool:
         if artist_window <= 0:
             return False
 
@@ -720,8 +741,12 @@ class TrackSelector:
                 return True
         return False
 
-    def _recent_queue_tracks(self, connection: sqlite3.Connection, current_queue_ids: Sequence[int]) -> List[Dict[str, Any]]:
-        artist_window = self.config.artist_repeat_window_tracks
+    def _recent_queue_tracks(
+        self,
+        connection: sqlite3.Connection,
+        current_queue_ids: Sequence[int],
+        artist_window: int,
+    ) -> List[Dict[str, Any]]:
         if artist_window <= 0 or not current_queue_ids:
             return []
 
@@ -778,15 +803,18 @@ class TrackSelector:
         history_ids = set(history_track_ids)
         current_ids = {int(track_id) for track_id in current_queue_ids}
         desired_count = max(1, desired_count)
+        artist_window = playlist.artist_repeat_window_tracks
+        if artist_window is None:
+            artist_window = self.config.artist_repeat_window_tracks
 
         selected: List[Dict[str, Any]] = []
         exhausted_once = False
 
         with self._connect() as connection:
-            recent_history_ids = history_track_ids[-self.config.artist_repeat_window_tracks :] if self.config.artist_repeat_window_tracks > 0 else []
+            recent_history_ids = history_track_ids[-artist_window:] if artist_window > 0 else []
             recent_history_metadata = self._fetch_metadata(connection, recent_history_ids)
             recent_tracks_seed = [recent_history_metadata[track_id] for track_id in recent_history_ids if track_id in recent_history_metadata]
-            recent_tracks_seed.extend(self._recent_queue_tracks(connection, current_queue_ids))
+            recent_tracks_seed.extend(self._recent_queue_tracks(connection, current_queue_ids, artist_window))
 
             for allow_artist_repeats in [False]:
                 attempts = 0
@@ -828,7 +856,7 @@ class TrackSelector:
                             continue
                         if not self._passes_playlist_tempo_rules(resolved_playlist_id, track):
                             continue
-                        if not allow_artist_repeats and self._shares_recent_artist(track, recent_tracks):
+                        if not allow_artist_repeats and self._shares_recent_artist(track, recent_tracks, artist_window):
                             artist_blocked_count += 1
                             continue
                         selected.append(track)

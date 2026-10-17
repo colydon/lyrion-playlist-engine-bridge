@@ -209,7 +209,7 @@ Start PartyMix through the same API:
     POST /api/start with {"playlist":"PartyMix","player_name":"Woonkamer"}
 
 EXTRA PLAYLISTS (THEMA-MIXEN)
-Naast de dag/avond/seizoen-mixen zijn er negen extra playlists die je los kunt
+Naast de dag/avond/seizoen-mixen zijn er tien extra playlists die je los kunt
 starten wanneer je daar zin in hebt. Ze hebben allemaal dezelfde opzet:
 
 - ze werken volledig op zichzelf: geen dag/avondmodus en geen seizoenslogica,
@@ -239,10 +239,20 @@ De negen playlists:
     SpaansMix           genre Spaans
     NederlandstaligMix  genre Nederlandstalig
     KerstMix            genre Kerst (speelt uitsluitend kerstmuziek)
+    LUCARIXMix          alle nummers van LUCARIX
 
 Wat er in de bibliotheek beschikbaar is (na alle filters):
     OldiesMix 752 | 80sMix 330 | 90sMix 570 | 00sMix 1033 | 10sMix 1184
     20sMix 1120 | SpaansMix 356 | NederlandstaligMix 657 | KerstMix 283
+    LUCARIXMix 29 (42 in de kerstperiode)
+
+LUCARIXMix is een uitzondering op de andere thema-mixen: de catalogus is klein
+(ongeveer 30 nummers buiten de kerstperiode). Daarom gebruikt deze lijst korte
+cooldowns (30-120 minuten in plaats van uren tot dagen) en staat de
+artiestenblokkade van de engine uit via "artist_repeat_window_tracks": 0 in de
+config. Anders zou de engine na het eerste nummer alle andere LUCARIX-tracks
+als "dezelfde artiest" wegfilteren. De kerstnummers van LUCARIX doen alleen
+mee van 15 november t/m 26 december (plaatselijke tijd).
 
 Starten gaat net als bij de andere playlists:
     POST /api/start with {"playlist":"KerstMix","player_name":"Woonkamer"}
