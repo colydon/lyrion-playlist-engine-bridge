@@ -125,6 +125,7 @@ class EngineConfig:
     player_recovery_cooldown_seconds: int
     stalled_playback_detection_enabled: bool
     stalled_playback_grace_seconds: int
+    stalled_playback_start_grace_seconds: int
     stalled_playback_progress_tolerance_seconds: float
     queue_pruning_enabled: bool
     queue_prune_keep_played_tracks: int
@@ -148,6 +149,9 @@ class EngineConfig:
         default_low_watermark = int(engine.get("default_low_watermark", 5))
         stalled_playback_detection_enabled = bool(engine.get("stalled_playback_detection_enabled", True))
         stalled_playback_grace_seconds = max(15, int(engine.get("stalled_playback_grace_seconds", 45)))
+        stalled_playback_start_grace_seconds = max(
+            10, int(engine.get("stalled_playback_start_grace_seconds", 20))
+        )
         stalled_playback_progress_tolerance_seconds = max(
             0.0,
             float(engine.get("stalled_playback_progress_tolerance_seconds", 2.5)),
@@ -222,6 +226,7 @@ class EngineConfig:
             player_recovery_cooldown_seconds=max(10, int(engine.get("player_recovery_cooldown_seconds", 120))),
             stalled_playback_detection_enabled=stalled_playback_detection_enabled,
             stalled_playback_grace_seconds=stalled_playback_grace_seconds,
+            stalled_playback_start_grace_seconds=stalled_playback_start_grace_seconds,
             stalled_playback_progress_tolerance_seconds=stalled_playback_progress_tolerance_seconds,
             queue_pruning_enabled=queue_pruning_enabled,
             queue_prune_keep_played_tracks=queue_prune_keep_played_tracks,
@@ -953,7 +958,18 @@ class SessionManager:
         streak = self._stall_streak.get(player_id, 0) + 1
         self._stall_streak[player_id] = streak
 
-        if streak == 1:
+        if streak == 1 and playback_time <= 1.0:
+            # De track is nooit begonnen (tijd blijft op 0): het Cast-apparaat
+            # heeft de laadopdracht niet uitgevoerd. Opnieuw openen helpt dan
+            # niet, de receiver moet opnieuw worden opgezet.
+            LOGGER.warning(
+                "Playback for %s never started (queue index %s, time %.2fs); power-cycling the Cast receiver.",
+                player_id,
+                current_index,
+                playback_time,
+            )
+            self._power_cycle_receiver(player_id, current_index)
+        elif streak == 1:
             LOGGER.warning(
                 "Detected stalled playback for %s at queue index %s and time %.2fs; reopening the current track.",
                 player_id,
@@ -1057,7 +1073,15 @@ class SessionManager:
         if elapsed_wall < max(self.config.poll_interval_seconds - 1, 1):
             return False
 
-        if now - stalled_since < self.config.stalled_playback_grace_seconds:
+        # Een track die nooit op gang komt, is meestal een geweigerde laadopdracht
+        # van het Cast-apparaat. Daar hoeven we niet de volledige grace-periode
+        # op te wachten.
+        grace_seconds = (
+            self.config.stalled_playback_start_grace_seconds
+            if playback_time <= 1.0
+            else self.config.stalled_playback_grace_seconds
+        )
+        if now - stalled_since < grace_seconds:
             return False
 
         if not allow_recovery:

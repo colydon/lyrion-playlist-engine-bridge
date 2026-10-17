@@ -22,6 +22,7 @@
     "artist_repeat_window_tracks": 30,
     "stalled_playback_detection_enabled": true,
     "stalled_playback_grace_seconds": 45,
+    "stalled_playback_start_grace_seconds": 20,
     "stalled_playback_progress_tolerance_seconds": 2.5,
     "player_recovery_enabled": true,
     "player_recovery_grace_seconds": 45,

@@ -88,6 +88,7 @@ Managed-session recovery is controlled by these engine settings:
 
 - `stalled_playback_detection_enabled`: detect players that remain in `play` but stop making real time progress
 - `stalled_playback_grace_seconds`: how long that stalled state may persist before recovery runs
+- `stalled_playback_start_grace_seconds`: shorter grace for a track that never starts at all (playback time stays at 0); such a stall is almost always a rejected Cast load and is handled sooner
 - `stalled_playback_progress_tolerance_seconds`: how much playback-time drift still counts as healthy progress
 - `player_recovery_enabled`: keep sessions alive and try to recover after unintended player-side failures
 - `player_recovery_grace_seconds`: wait before rebuilding an unexpectedly empty queue
@@ -124,7 +125,7 @@ GET http://<engine-host>:8787/api/players?token=<token>
 Recovery behavior:
 
 - if a player remains in `play` but the reported playback time stops advancing for too long, the engine can reopen the current queue entry to kick CastBridge/Chromecast back into playback
-- a Cast receiver can also get stuck while the bridge keeps reporting `mode=play` with the time frozen at 0. Reopening the track does not help then; the engine escalates to a power cycle of the player (`power 0` → `power 1` → reopen), and only if that still fails does it skip to the next queue entry
+- a Cast receiver can also get stuck while the bridge keeps reporting `mode=play` with the time frozen at 0. That is a rejected load, so reopening the track does not help: the engine power-cycles the player right away (`power 0` → `power 1` → reopen) after the shorter `stalled_playback_start_grace_seconds`. A stall that happens mid-track is first handled with a reopen; if that fails, the engine power-cycles, and only if it still fails does it skip to the next queue entry
 - if a managed player disconnects and later reconnects, the engine can resume playback or rebuild the queue — unless the player was stopped or paused by the user, in which case it stays quiet
 - if a managed queue disappears unexpectedly, the engine can rebuild it after the configured grace period
 - if a user pauses or stops the player and the queue is still intact, the engine keeps the session suspended and does not auto-restart
