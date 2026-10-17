@@ -872,7 +872,9 @@ class SessionManager:
         self._recover_after_disconnect: Dict[str, float] = {}
         self._last_recovery_attempt_at: Dict[str, float] = {}
         self._playback_progress_state: Dict[str, Dict[str, float]] = {}
-        self._stalled_track_id: Dict[str, int] = {}
+        # Hoeveel opeenvolgende herstelpogingen zonder gezonde weergave er waren.
+        # 1 = opnieuw openen, 2 = Cast-receiver power-cyclen, 3 = volgende track.
+        self._stall_streak: Dict[str, int] = {}
 
     def start_background_loop(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -892,7 +894,7 @@ class SessionManager:
         self._recover_after_disconnect.pop(player_id, None)
         self._last_recovery_attempt_at.pop(player_id, None)
         self._playback_progress_state.pop(player_id, None)
-        self._stalled_track_id.pop(player_id, None)
+        self._stall_streak.pop(player_id, None)
 
     def _can_attempt_recovery(self, player_id: str, now: float) -> bool:
         last_attempt_at = self._last_recovery_attempt_at.get(player_id, 0.0)
@@ -923,6 +925,23 @@ class SessionManager:
     def _clear_playback_progress_state(self, player_id: str) -> None:
         self._playback_progress_state.pop(player_id, None)
 
+    def _power_cycle_receiver(self, player_id: str, index: int) -> None:
+        """Laat de Cast-receiver opnieuw opzetten en hervat dezelfde track.
+
+        Nodig wanneer de bridge wel mode=play meldt maar de weergavetijd op 0
+        blijft staan: het Cast-apparaat heeft dan zelf een vastgelopen sessie
+        en reageert niet meer op een gewone play/index.
+        """
+        try:
+            self.lms.power_off(player_id)
+            time.sleep(4.0)
+            self.lms.power_on(player_id)
+            time.sleep(2.0)
+            self.lms.play_index(player_id, max(0, int(index)))
+            self.lms.play(player_id)
+        except RequestError as exc:
+            LOGGER.warning("Could not power-cycle %s: %s", player_id, exc)
+
     def _recover_stalled_playback(
         self,
         player_id: str,
@@ -931,16 +950,26 @@ class SessionManager:
         current_track_id: Optional[int] = None,
         total_tracks: int = 0,
     ) -> None:
-        already_tried = (
-            current_track_id is not None
-            and self._stalled_track_id.get(player_id) == current_track_id
-        )
+        streak = self._stall_streak.get(player_id, 0) + 1
+        self._stall_streak[player_id] = streak
 
-        if already_tried and total_tracks > current_index + 1:
-            # Reopening this track already failed once, so replaying it again
-            # would loop forever. That happens with a track that never reaches
-            # its own end, for example a file with a broken container. Skip on
-            # to the next queue item instead of replaying the same track.
+        if streak == 1:
+            LOGGER.warning(
+                "Detected stalled playback for %s at queue index %s and time %.2fs; reopening the current track.",
+                player_id,
+                current_index,
+                playback_time,
+            )
+            self.lms.play_index(player_id, current_index)
+        elif streak == 2:
+            LOGGER.warning(
+                "Playback for %s is still stalled after reopening; power-cycling the Cast receiver.",
+                player_id,
+            )
+            self._power_cycle_receiver(player_id, current_index)
+        elif total_tracks > current_index + 1:
+            # Ook na een power-cycle geen vooruitgang: dan is deze track zelf
+            # het probleem (bijv. een bestand dat nooit zijn einde bereikt).
             LOGGER.warning(
                 "Playback for %s is stuck again on track %s (queue index %s, time %.2fs); "
                 "skipping to the next queue item instead of replaying it.",
@@ -949,18 +978,15 @@ class SessionManager:
                 current_index,
                 playback_time,
             )
-            self._stalled_track_id.pop(player_id, None)
+            self._stall_streak.pop(player_id, None)
             self.lms.play_index(player_id, current_index + 1)
         else:
             LOGGER.warning(
-                "Detected stalled playback for %s at queue index %s and time %.2fs; reopening the current track.",
+                "Playback for %s is still stuck on its last queue item; power-cycling again.",
                 player_id,
-                current_index,
-                playback_time,
             )
-            if current_track_id is not None:
-                self._stalled_track_id[player_id] = current_track_id
-            self.lms.play_index(player_id, current_index)
+            self._stall_streak.pop(player_id, None)
+            self._power_cycle_receiver(player_id, current_index)
 
         self._clear_playback_progress_state(player_id)
 
@@ -975,22 +1001,21 @@ class SessionManager:
         playback_time: float,
         current_track_id: Optional[int] = None,
         total_tracks: int = 0,
-    ) -> None:
+        allow_recovery: bool = True,
+    ) -> bool:
+        """Volgt de weergavevoortgang en herstelt een stilgevallen speler.
+
+        Geeft True terug wanneer de speler langer dan de grace-periode stilstaat.
+        Met allow_recovery=False wordt er niets hersteld; de aanroeper beslist dan
+        zelf wat er gebeurt (gebruikt door "stop na dit nummer").
+        """
         if not self.config.stalled_playback_detection_enabled:
             self._clear_playback_progress_state(player_id)
-            return
+            return False
 
         if mode != "play" or connected == 0 or not queue_intact:
             self._clear_playback_progress_state(player_id)
-            return
-
-        # Playback moved on to a different track, so forget the earlier stall.
-        # Comparing track ids (not queue indexes) keeps this correct while the
-        # queue is being pruned and the indexes shift.
-        if current_track_id is not None:
-            stalled_before = self._stalled_track_id.get(player_id)
-            if stalled_before is not None and stalled_before != current_track_id:
-                self._stalled_track_id.pop(player_id, None)
+            return False
 
         state = self._playback_progress_state.get(player_id)
         if not state:
@@ -1000,9 +1025,9 @@ class SessionManager:
                 "playback_time": playback_time,
                 "stalled_since": now,
             }
-            return
+            return False
 
-        previous_index = int(state.get("current_index", -1))
+        previous_index = int(float(state.get("current_index", -1)))
         previous_time = float(state.get("playback_time", 0.0))
         previous_observed_at = float(state.get("observed_at", now))
         stalled_since = float(state.get("stalled_since", now))
@@ -1014,6 +1039,12 @@ class SessionManager:
         elif elapsed_playback < -1.0:
             stalled_since = now
 
+        # De weergave loopt al een tijd normaal door, dus de eerdere
+        # herstelpogingen zijn geslaagd en de teller mag terug naar nul.
+        if elapsed_playback > self.config.stalled_playback_progress_tolerance_seconds and playback_time > 45:
+            if self._stall_streak.pop(player_id, None) is not None:
+                LOGGER.info("Playback for %s recovered; resetting the stall counter.", player_id)
+
         state.update(
             {
                 "observed_at": now,
@@ -1024,17 +1055,21 @@ class SessionManager:
         )
 
         if elapsed_wall < max(self.config.poll_interval_seconds - 1, 1):
-            return
+            return False
 
         if now - stalled_since < self.config.stalled_playback_grace_seconds:
-            return
+            return False
+
+        if not allow_recovery:
+            return True
 
         if not self._can_attempt_recovery(player_id, now):
-            return
+            return False
 
         self._recover_stalled_playback(
             player_id, current_index, playback_time, current_track_id, total_tracks
         )
+        return True
 
     def _build_session_tracks(
         self,
@@ -1109,6 +1144,17 @@ class SessionManager:
                 continue
 
             mode = str(status.get("mode") or "").lower()
+            power = int(status.get("power") if status.get("power") is not None else 1)
+            connected = int(status.get("connected") if status.get("connected") is not None else 1)
+
+            queue_ids = [int(item["id"]) for item in status.get("playlist_loop", []) if str(item.get("id", "")).isdigit()]
+            current_index = int(status.get("playlist_cur_index") or 0)
+            playback_time = float(status.get("time") or 0.0)
+            total_tracks = max(int(status.get("playlist_tracks") or 0), len(queue_ids))
+            current_track_id = queue_ids[current_index] if 0 <= current_index < len(queue_ids) else None
+            remaining = max(total_tracks - current_index - 1, 0)
+            queue_intact = total_tracks > 0 or bool(queue_ids)
+            queued_from_current = queue_ids[current_index:] if 0 <= current_index < len(queue_ids) else queue_ids
 
             if session.get("stop_after_track"):
                 # "Stop na het huidige nummer": zet de speler uit zodra hij stilstaat,
@@ -1124,18 +1170,36 @@ class SessionManager:
                         LOGGER.warning("Could not power off %s: %s", player_id, exc)
                     self.state_store.stop_session(player_id)
                     self._clear_runtime_state(player_id)
-                continue
-            power = int(status.get("power") if status.get("power") is not None else 1)
-            connected = int(status.get("connected") if status.get("connected") is not None else 1)
+                    continue
 
-            queue_ids = [int(item["id"]) for item in status.get("playlist_loop", []) if str(item.get("id", "")).isdigit()]
-            current_index = int(status.get("playlist_cur_index") or 0)
-            playback_time = float(status.get("time") or 0.0)
-            total_tracks = max(int(status.get("playlist_tracks") or 0), len(queue_ids))
-            current_track_id = queue_ids[current_index] if 0 <= current_index < len(queue_ids) else None
-            remaining = max(total_tracks - current_index - 1, 0)
-            queue_intact = total_tracks > 0 or bool(queue_ids)
-            queued_from_current = queue_ids[current_index:] if 0 <= current_index < len(queue_ids) else queue_ids
+                # Een sessie met deze vlag wordt niet meer bijgevuld, dus een
+                # vastgelopen speler zou hier anders uren blijven hangen. Als de
+                # weergave niet vooruitkomt, is de opdracht "stop" alsnog uitgevoerd.
+                if mode == "play" and self._handle_playback_progress(
+                    player_id,
+                    now,
+                    mode,
+                    connected,
+                    queue_intact,
+                    current_index,
+                    playback_time,
+                    current_track_id,
+                    total_tracks,
+                    allow_recovery=False,
+                ):
+                    LOGGER.info(
+                        "Stop-after-track session for %s is not progressing; powering the player off.",
+                        player_id,
+                    )
+                    try:
+                        self.lms.power_off(player_id)
+                    except RequestError as exc:
+                        LOGGER.warning("Could not power off %s: %s", player_id, exc)
+                    self.state_store.stop_session(player_id)
+                    self._clear_runtime_state(player_id)
+                elif mode in {"pause", "stop"}:
+                    self._clear_playback_progress_state(player_id)
+                continue
 
             if connected == 0:
                 self._clear_playback_progress_state(player_id)
@@ -1175,6 +1239,15 @@ class SessionManager:
 
             if recovered_after_disconnect and queue_intact and mode != "play":
                 self._clear_playback_progress_state(player_id)
+                if self._manual_suspend_reason.get(player_id):
+                    # De gebruiker heeft zelf gestopt/gepauzeerd. Een Cast-apparaat
+                    # dat daarna loskoppelt en weer terugkomt mag dat niet ongedaan
+                    # maken; anders begint de muziek vanzelf opnieuw.
+                    LOGGER.info(
+                        "Not resuming %s after reconnect because it was stopped or paused by the user.",
+                        player_id,
+                    )
+                    continue
                 if self.config.player_recovery_enabled and self._can_attempt_recovery(player_id, now):
                     LOGGER.info("Resuming playback for %s after reconnect because the managed queue is still intact.", player_id)
                     self.lms.play(player_id)
@@ -1182,7 +1255,7 @@ class SessionManager:
 
             if not queue_intact:
                 self._clear_playback_progress_state(player_id)
-                if player_id in self._manual_suspend_reason and not recovered_after_disconnect:
+                if self._manual_suspend_reason.get(player_id):
                     LOGGER.info("Stopping managed session for %s because a manually suspended queue was cleared.", player_id)
                     self.state_store.stop_session(player_id)
                     self._clear_runtime_state(player_id)
@@ -1321,6 +1394,22 @@ class SessionManager:
             # uit zodra het nummer klaar is, zodat de bridge het Cast-apparaat
             # meteen loslaat (anders blijft het scherm 30 s op de receiver staan).
             kept = self._trim_queue_to_current_track(pid)
+            status = self.lms.status(pid)
+            if str(status.get("mode") or "").lower() in {"stop", "pause"}:
+                # Er speelt niets meer, dus er valt niets af te maken: meteen afronden.
+                try:
+                    self.lms.power_off(pid)
+                except RequestError as exc:
+                    LOGGER.warning("Could not power off %s: %s", pid, exc)
+                self.state_store.stop_session(pid)
+                self._clear_runtime_state(pid)
+                return {
+                    "player_id": pid,
+                    "player_name": player["name"],
+                    "stopped": True,
+                    "after_current_track": False,
+                    "tracks_left_in_queue": kept,
+                }
             self.state_store.set_stop_after_track(pid, True)
             return {
                 "player_id": pid,
@@ -1465,6 +1554,7 @@ class PlaylistApiHandler(BaseHTTPRequestHandler):
                 playlist = self._param(payload, query, "playlist", required=True)
                 player_name = self._param(payload, query, "player_name")
                 player_id = self._param(payload, query, "player_id")
+                LOGGER.info("Start request: playlist=%s player_name=%s player_id=%s", playlist, player_name, player_id)
                 result = self.engine.session_manager.start_playlist(playlist, player_name, player_id)
                 json_response(self, HTTPStatus.OK, result)
                 return
@@ -1482,6 +1572,7 @@ class PlaylistApiHandler(BaseHTTPRequestHandler):
                 player_name = self._param(payload, query, "player_name")
                 player_id = self._param(payload, query, "player_id")
                 when = (self._param(payload, query, "when") or "now").strip().lower()
+                LOGGER.info("Stop request: player_name=%s player_id=%s when=%s", player_name, player_id, when)
                 result = self.engine.session_manager.stop_playlist(player_name, player_id, when)
                 json_response(self, HTTPStatus.OK, result)
                 return

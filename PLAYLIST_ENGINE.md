@@ -124,7 +124,8 @@ GET http://<engine-host>:8787/api/players?token=<token>
 Recovery behavior:
 
 - if a player remains in `play` but the reported playback time stops advancing for too long, the engine can reopen the current queue entry to kick CastBridge/Chromecast back into playback
-- if a managed player disconnects and later reconnects, the engine can resume playback or rebuild the queue
+- a Cast receiver can also get stuck while the bridge keeps reporting `mode=play` with the time frozen at 0. Reopening the track does not help then; the engine escalates to a power cycle of the player (`power 0` → `power 1` → reopen), and only if that still fails does it skip to the next queue entry
+- if a managed player disconnects and later reconnects, the engine can resume playback or rebuild the queue — unless the player was stopped or paused by the user, in which case it stays quiet
 - if a managed queue disappears unexpectedly, the engine can rebuild it after the configured grace period
 - if a user pauses or stops the player and the queue is still intact, the engine keeps the session suspended and does not auto-restart
 - `POST /api/stop` still disables management for that player immediately
@@ -229,6 +230,24 @@ Body: {"player_name":"Kantoor","when":"track"}
 
 `when` accepts `track`, `end-of-track`, `after-track` or `after_current_track`. Without
 `when` (or with `when: now`) only the engine's management stops, as before.
+
+Wat de engine daarbij doet:
+
+- De wachtrij wordt teruggeknipt tot het nummer dat nu speelt; daarna wordt niet meer
+  bijgevuld.
+- Zodra de speler op `stop` staat, wordt hij uitgezet (`power 0`), zodat de bridge het
+  Cast-apparaat meteen loslaat.
+- Staat de speler al gepauzeerd of gestopt, dan wordt de opdracht direct afgerond.
+- Komt de weergave niet vooruit (het nummer blijft op dezelfde tijd staan), dan wordt de
+  speler alsnog uitgezet. Zonder die controle bleef een vastgelopen speler eindeloos hangen,
+  omdat een sessie met deze vlag niet meer bijgevuld en niet meer gecontroleerd werd.
+
+Elke `start` en `stop` wordt met zijn parameters gelogd
+(`Start request: playlist=… player_name=…` / `Stop request: … when=…`), zodat je in
+`playlist_engine.log` kunt zien wat Homey precies stuurt.
+
+Na een handmatige stop of pauze hervat de engine niets, ook niet als de Cast-speler even
+loskoppelt en weer terugkomt. Een reconnect leidde eerder tot een onbedoelde herstart.
 
 Homey recommendation:
 
