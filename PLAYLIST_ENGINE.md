@@ -310,6 +310,35 @@ The bridge then logs every `playlist` command that LMS executes, including its p
 source, plus every DSTM question (`engine actief = ja/nee`), to the LMS log. Delete the file to
 stop logging.
 
+**Dubbele of verouderde spelers na het opnieuw koppelen van een Cast-apparaat**
+
+Een Chromecast/JBL die opnieuw aan Google Home wordt gekoppeld, krijgt soms een nieuwe UDN en
+daarmee een nieuwe `cc:cc:xx` client-id in LMS. De oude client blijft in de prefs staan en het
+oude `<device>`-blok blijft in `castbridge.xml` staan. Gevolg: dezelfde speaker verschijnt twee
+keer, een oude naam (`KantoorSpeakerJBL`) blijft hangen, Homey-flows die op `player_name` matchen
+vinden niets meer en de engine blijft op een verdwenen `player_id` pollen.
+
+Opruimen:
+
+1. Vergelijk de spelerslijst met de config:
+   `curl -s -d '{"id":1,"method":"slim.request","params":["",["players",0,100]]}' http://127.0.0.1:9000/jsonrpc.js`
+   en `grep -E "<(udn|name|mac)>" /usr/local/slimserver/prefs/castbridge.xml`.
+2. LMS stoppen (`sudo /usr/local/etc/init.d/slimserver stop`, nooit via een pipe).
+3. In `prefs/server.prefs` de sectie `_client:<oude-mac>:` verwijderen (loopt tot de volgende
+   regel die niet met een spatie begint) en in `castbridge.xml` het bijbehorende `<device>`-blok.
+4. LMS starten. De speler heet nu zoals de bridge hem aanmeldt; een afwijkende naam zet je goed
+   met de CLI: `["<playerid>",["name","KantoorSpeaker"]]`. Dat schrijft de pref `playername`.
+5. Een sessie van de engine op een verdwenen `player_id` kun je niet met `/api/stop` opruimen
+   (de speler is niet meer te resolven). Verwijder de rij uit `playlist_engine_state.db`
+   (`sessions` en `history`) en herstart de engine; de watchdog doet dat vanzelf.
+
+**Let op:** `castbridge.xml` is regelgebaseerd. Bewerk het alleen line-based (één tag per regel) en
+laat de bestaande `<common>`-sectie intact. Een bestand dat de bridge niet kan lezen wordt bij de
+start volledig door defaults vervangen (`mode=thru`, `sample_rate=96000`, `binding=?`,
+`stop_receiver=0`) en dan krijgen **alle** renderers nieuwe `cc:cc:`-macs, waardoor elke
+engine-sessie stukloopt. Maak eerst een back-up en controleer na de start het `sendHELO` in de
+bridge-log (`MaxSampleRate=`) en of `<binding>192.168.0.54</binding>` bewaard is gebleven.
+
 **Notes**
 
 - The SQL is the single source of truth for how often a track may be played: the
