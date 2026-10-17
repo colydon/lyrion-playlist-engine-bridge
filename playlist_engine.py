@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import gzip
+import http.client
 import json
 import logging
 import re
@@ -339,6 +340,13 @@ class StateStore:
                 """
             )
 
+            # Migratie: vlag voor "stop na het huidige nummer".
+            kolommen = {rij[1] for rij in connection.execute("pragma table_info(sessions)")}
+            if "stop_after_track" not in kolommen:
+                connection.execute(
+                    "alter table sessions add column stop_after_track integer not null default 0"
+                )
+
     def save_session(self, player_id: str, player_name: str, playlist_name: str, playlist: PlaylistDefinition) -> None:
         now = int(time.time())
         with self._connect() as connection:
@@ -355,6 +363,7 @@ class StateStore:
                     initial_count = excluded.initial_count,
                     topup_count = excluded.topup_count,
                     low_watermark = excluded.low_watermark,
+                    stop_after_track = 0,
                     active = 1
                 """,
                 (
@@ -376,9 +385,16 @@ class StateStore:
     def list_sessions(self) -> List[Dict[str, Any]]:
         with self._connect() as connection:
             rows = connection.execute(
-                "select player_id, player_name, playlist_name, started_at, initial_count, topup_count, low_watermark from sessions where active = 1 order by player_name collate nocase"
+                "select player_id, player_name, playlist_name, started_at, initial_count, topup_count, low_watermark, stop_after_track from sessions where active = 1 order by player_name collate nocase"
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def set_stop_after_track(self, player_id: str, value: bool) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "update sessions set stop_after_track = ? where player_id = ?",
+                (1 if value else 0, player_id),
+            )
 
     def add_history(self, player_id: str, playlist_name: str, track_ids: Sequence[int]) -> None:
         now = int(time.time())
@@ -431,7 +447,10 @@ class LmsClient:
             with request.urlopen(req, timeout=60) as response:
                 raw = response.read()
                 content_encoding = str(response.headers.get("Content-Encoding", "")).lower()
-        except error.URLError as exc:
+        except (error.URLError, OSError, http.client.HTTPException) as exc:
+            # OSError covers ConnectionReset/RemoteDisconnected, HTTPException
+            # covers malformed responses. Without this a single hiccup aborts
+            # the whole maintenance pass and all later players are skipped.
             raise RequestError(f"LMS request failed: {exc}", HTTPStatus.BAD_GATEWAY) from exc
 
         # Defensive fallback: decompress anyway if LMS ignored the request above.
@@ -510,6 +529,9 @@ class LmsClient:
 
     def play(self, player_id: str) -> None:
         self._request(player_id, ["play"])
+
+    def power_off(self, player_id: str) -> None:
+        self._request(player_id, ["power", "0"])
 
 
 class TrackSelector:
@@ -1087,6 +1109,22 @@ class SessionManager:
                 continue
 
             mode = str(status.get("mode") or "").lower()
+
+            if session.get("stop_after_track"):
+                # "Stop na het huidige nummer": zet de speler uit zodra hij stilstaat,
+                # zodat de bridge het Cast-apparaat direct loslaat.
+                if mode == "stop":
+                    try:
+                        self.lms.power_off(player_id)
+                        LOGGER.info(
+                            "Player %s powered off after the last track; the Cast device is released.",
+                            player_id,
+                        )
+                    except RequestError as exc:
+                        LOGGER.warning("Could not power off %s: %s", player_id, exc)
+                    self.state_store.stop_session(player_id)
+                    self._clear_runtime_state(player_id)
+                continue
             power = int(status.get("power") if status.get("power") is not None else 1)
             connected = int(status.get("connected") if status.get("connected") is not None else 1)
 
@@ -1273,15 +1311,101 @@ class SessionManager:
             "tracks": tracks,
         }
 
-    def stop_playlist(self, player_name: Optional[str], player_id: Optional[str]) -> Dict[str, Any]:
+    def stop_playlist(self, player_name: Optional[str], player_id: Optional[str], when: str = "now") -> Dict[str, Any]:
         player = self.lms.resolve_player(player_name, player_id)
-        self.state_store.stop_session(player["playerid"])
-        self._clear_runtime_state(player["playerid"])
+        pid = player["playerid"]
+
+        if when in {"track", "end-of-track", "after-track", "after_current_track"}:
+            # Laat het huidige nummer afspelen en knip de rest van de wachtrij af.
+            # De sessie blijft staan met een vlag; de onderhoudslus zet de speler
+            # uit zodra het nummer klaar is, zodat de bridge het Cast-apparaat
+            # meteen loslaat (anders blijft het scherm 30 s op de receiver staan).
+            kept = self._trim_queue_to_current_track(pid)
+            self.state_store.set_stop_after_track(pid, True)
+            return {
+                "player_id": pid,
+                "player_name": player["name"],
+                "stopped": True,
+                "after_current_track": True,
+                "tracks_left_in_queue": kept,
+            }
+
+        self.state_store.stop_session(pid)
+        self._clear_runtime_state(pid)
         return {
-            "player_id": player["playerid"],
+            "player_id": pid,
             "player_name": player["name"],
             "stopped": True,
         }
+
+    def _trim_queue_to_current_track(self, player_id: str) -> int:
+        """Laat alleen het huidige nummer in de wachtrij staan.
+
+        Returns het aantal tracks dat overblijft (0 als er niets speelt).
+        """
+        status = self.lms.status(player_id)
+        total = int(status.get("playlist_tracks") or 0)
+        index = int(status.get("playlist_cur_index") or 0)
+
+        if total <= 0:
+            return 0
+
+        # Van achteren naar voren verwijderen, zodat de huidige index blijft kloppen.
+        for position in range(total - 1, index, -1):
+            try:
+                self.lms.delete_track_at_index(player_id, position)
+            except RequestError as exc:
+                LOGGER.warning("Kon track %s niet uit de wachtrij van %s verwijderen: %s", position, player_id, exc)
+                break
+
+        return index + 1
+
+    def _seconds_left(self, player_id: str) -> Optional[float]:
+        """Hoeveel seconden het huidige nummer nog duurt (None = onbekend)."""
+        try:
+            status = self.lms.status(player_id)
+        except RequestError:
+            return None
+
+        duration = float(status.get("duration") or 0)
+        playback_time = float(status.get("time") or 0)
+        if duration <= 0:
+            return None
+        return max(duration - playback_time, 0.0)
+
+    def _schedule_power_off(self, player_id: str, seconds: float) -> None:
+        """Zet de speler uit zodra het huidige nummer klaar is.
+
+        Een power-off laat de bridge het Cast-apparaat direct los, in plaats van
+        de vaste 30 seconden idle-timeout.
+        """
+        timer = threading.Timer(max(seconds, 0.0) + 2.0, self._power_off_when_stopped, args=(player_id, 24))
+        timer.daemon = True
+        self._power_off_timers = self._power_off_timers[-20:] + [timer]
+        timer.start()
+
+    def _power_off_when_stopped(self, player_id: str, attempts: int) -> None:
+        try:
+            status = self.lms.status(player_id)
+        except RequestError:
+            status = {}
+
+        if str(status.get("mode") or "").lower() == "stop":
+            try:
+                self.lms.power_off(player_id)
+                LOGGER.info("Player %s powered off after the last track; the Cast device is released.", player_id)
+            except RequestError as exc:
+                LOGGER.warning("Could not power off %s: %s", player_id, exc)
+            return
+
+        if attempts <= 0:
+            LOGGER.info("Player %s is still active; not powering it off.", player_id)
+            return
+
+        timer = threading.Timer(5.0, self._power_off_when_stopped, args=(player_id, attempts - 1))
+        timer.daemon = True
+        self._power_off_timers = self._power_off_timers[-20:] + [timer]
+        timer.start()
 
 
 class PlaylistApiHandler(BaseHTTPRequestHandler):
@@ -1357,7 +1481,8 @@ class PlaylistApiHandler(BaseHTTPRequestHandler):
             if route == "/api/stop":
                 player_name = self._param(payload, query, "player_name")
                 player_id = self._param(payload, query, "player_id")
-                result = self.engine.session_manager.stop_playlist(player_name, player_id)
+                when = (self._param(payload, query, "when") or "now").strip().lower()
+                result = self.engine.session_manager.stop_playlist(player_name, player_id, when)
                 json_response(self, HTTPStatus.OK, result)
                 return
 

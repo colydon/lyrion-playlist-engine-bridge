@@ -359,3 +359,15 @@ Controle:
 Bij twijfel de config terugzetten kan met:
     /usr/local/slimserver/prefs/castbridge.xml.bak-20261011-rate
 
+
+STOPPEN NA HET HUIDIGE NUMMER (via de API / Homey)
+    POST http://192.168.0.54:8787/api/stop
+    Header: X-API-Key: <token>
+    Body: {"player_name":"Slaapkamer","when":"track"}
+
+De engine knipt de wachtrij dan af tot het nummer dat nu speelt: dat nummer loopt
+gewoon af, daarna stopt het en zet de engine de speler uit. Daardoor laat de bridge
+het Cast-apparaat meteen los en keert het scherm direct terug naar zijn eigen
+weergave (zonder de 30 s durende "receiver"-melding).
+Zonder "when" (of met "when":"now") stopt alleen het beheer van de engine, zoals
+voorheen. In Homey: een HTTP-request-kaartje met bovenstaande body.

@@ -216,6 +216,20 @@ Header: X-API-Key: <token>
 Body: {"player_name":"Kantoor"}
 ```
 
+Stop **after the current track** (the queue is trimmed to the song that is playing now;
+playback ends when that song ends and the player is then powered off, so the bridge
+releases the Cast device immediately and the screen returns to its own view right away
+instead of showing the receiver for 30 s):
+
+```text
+POST http://<engine-host>:8787/api/stop
+Header: X-API-Key: <token>
+Body: {"player_name":"Kantoor","when":"track"}
+```
+
+`when` accepts `track`, `end-of-track`, `after-track` or `after_current_track`. Without
+`when` (or with `when: now`) only the engine's management stops, as before.
+
 Homey recommendation:
 
 - Make one Flow per room if you want fixed buttons.
