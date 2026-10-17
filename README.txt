@@ -327,11 +327,15 @@ binaries sox, flac, faad, mac en wvunpack. De muziekbibliotheek is volledig mp3
 
 Instellingen in /usr/local/slimserver/prefs/castbridge.xml (14-10-2026):
 
-- Kantoor, Beneden, Hele Huis -> <mode>mp3</mode> + <sample_rate>96000</sample_rate>
-  Deze drie hadden last van de flac 96 kHz-stroom (Kantoor gaf http-fouten, de
-  Cast-groepen accepteren geen flac). mp3 wordt 1-op-1 doorgegeven.
+- Kantoor, Beneden, Hele Huis, KantoorSpeaker -> <mode>mp3</mode> + <sample_rate>96000</sample_rate>
+  Deze spelers hebben last van de flac-stroom: Kantoor gaf http-fouten, de
+  Cast-groepen accepteren geen flac, en de JBL KantoorSpeaker stopte na ~30 s met
+  een "http parsing error" in de bridge (tijd bleef op ~31 s staan, daarna stil).
+  mp3 wordt 1-op-1 doorgegeven.
   Nadeel: een mp3-stroom heeft geen lengte, dus op een Nest Hub met scherm tonen
   deze spelers geen voortgangsbalk en geen afstandsbediening.
+  Let op: een nieuw toegevoegde speaker erft de <common>-instellingen (flc/48k).
+  Stopt een nieuw apparaat na een paar seconden? Zet hem dan ook op mp3 + 96000.
 
 - Woonkamer, Slaapkamer, Keuken, TV, TV Slaapkamer -> <mode>flc</mode> +
   <sample_rate>48000</sample_rate> (als default in het <common>-blok).
