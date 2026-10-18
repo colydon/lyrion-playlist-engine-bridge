@@ -125,6 +125,7 @@ class EngineConfig:
     player_recovery_enabled: bool
     player_recovery_grace_seconds: int
     player_recovery_cooldown_seconds: int
+    receiver_reset_after_idle_seconds: int
     stalled_playback_detection_enabled: bool
     stalled_playback_grace_seconds: int
     stalled_playback_start_grace_seconds: int
@@ -153,6 +154,9 @@ class EngineConfig:
         stalled_playback_grace_seconds = max(15, int(engine.get("stalled_playback_grace_seconds", 45)))
         stalled_playback_start_grace_seconds = max(
             10, int(engine.get("stalled_playback_start_grace_seconds", 20))
+        )
+        receiver_reset_after_idle_seconds = max(
+            0, int(engine.get("receiver_reset_after_idle_seconds", 1800))
         )
         stalled_playback_progress_tolerance_seconds = max(
             0.0,
@@ -232,6 +236,7 @@ class EngineConfig:
             player_recovery_enabled=bool(engine.get("player_recovery_enabled", True)),
             player_recovery_grace_seconds=max(5, int(engine.get("player_recovery_grace_seconds", 45))),
             player_recovery_cooldown_seconds=max(10, int(engine.get("player_recovery_cooldown_seconds", 120))),
+            receiver_reset_after_idle_seconds=receiver_reset_after_idle_seconds,
             stalled_playback_detection_enabled=stalled_playback_detection_enabled,
             stalled_playback_grace_seconds=stalled_playback_grace_seconds,
             stalled_playback_start_grace_seconds=stalled_playback_start_grace_seconds,
@@ -551,6 +556,9 @@ class LmsClient:
 
     def play(self, player_id: str) -> None:
         self._request(player_id, ["play"])
+
+    def stop(self, player_id: str) -> None:
+        self._request(player_id, ["stop"])
 
     def power_off(self, player_id: str) -> None:
         self._request(player_id, ["power", "0"])
@@ -908,6 +916,14 @@ class SessionManager:
         # Hoeveel opeenvolgende herstelpogingen zonder gezonde weergave er waren.
         # 1 = opnieuw openen, 2 = Cast-receiver power-cyclen, 3 = volgende track.
         self._stall_streak: Dict[str, int] = {}
+        # Laatst geziene queue-index en hoe vaak LMS hem zonder weergave vooruit zette.
+        # Dat gebeurt als het Cast-apparaat elke laadopdracht weigert: LMS skipt dan
+        # door de hele wachtrij. Bijgevullen zou dat alleen maar verergeren.
+        self._last_queue_index: Dict[str, int] = {}
+        self._skip_storm: Dict[str, int] = {}
+        # Laatste keer dat er echt werd afgespeeld; gebruikt om een lang slapende
+        # Cast-receiver eerst schoon te herstarten voor we een stream laden.
+        self._last_playback_at: Dict[str, float] = {}
 
     def start_background_loop(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -928,6 +944,8 @@ class SessionManager:
         self._last_recovery_attempt_at.pop(player_id, None)
         self._playback_progress_state.pop(player_id, None)
         self._stall_streak.pop(player_id, None)
+        self._last_queue_index.pop(player_id, None)
+        self._skip_storm.pop(player_id, None)
 
     def _can_attempt_recovery(self, player_id: str, now: float) -> bool:
         last_attempt_at = self._last_recovery_attempt_at.get(player_id, 0.0)
@@ -974,6 +992,20 @@ class SessionManager:
             self.lms.play(player_id)
         except RequestError as exc:
             LOGGER.warning("Could not power-cycle %s: %s", player_id, exc)
+
+    def _reset_receiver(self, player_id: str) -> None:
+        """Zet de receiver uit en weer aan, zonder iets te starten.
+
+        Een Cast-apparaat dat uren stil heeft gestaan blijkt soms elke nieuwe
+        laadopdracht te weigeren. Een verse receiver-sessie voorkomt dat.
+        """
+        try:
+            self.lms.power_off(player_id)
+            time.sleep(3.5)
+            self.lms.power_on(player_id)
+            time.sleep(1.5)
+        except RequestError as exc:
+            LOGGER.warning("Could not reset the receiver of %s: %s", player_id, exc)
 
     def _recover_stalled_playback(
         self,
@@ -1331,6 +1363,40 @@ class SessionManager:
                     LOGGER.info("Resuming managed session monitoring for %s after the player returned to play.", player_id)
                 self._manual_suspend_reason.pop(player_id, None)
                 self._recover_after_disconnect.pop(player_id, None)
+
+                previous_index = self._last_queue_index.get(player_id)
+                self._last_queue_index[player_id] = current_index
+                if playback_time <= 1.0 and previous_index is not None and current_index > previous_index:
+                    storm = self._skip_storm.get(player_id, 0) + 1
+                    self._skip_storm[player_id] = storm
+                    LOGGER.info(
+                        "LMS is skipping through the queue on %s (index %s -> %s, playback time %.2fs); "
+                        "not topping up while this continues.",
+                        player_id,
+                        previous_index,
+                        current_index,
+                        playback_time,
+                    )
+                else:
+                    self._skip_storm.pop(player_id, None)
+
+                if self._skip_storm.get(player_id, 0) >= 2:
+                    # Het apparaat weigert elke stream: stop de skip-lus en zet de
+                    # receiver opnieuw op in plaats van de wachtrij te blijven vullen.
+                    LOGGER.warning(
+                        "Stopping the skip loop on %s and power-cycling the Cast receiver.",
+                        player_id,
+                    )
+                    try:
+                        self.lms.stop(player_id)
+                    except RequestError as exc:
+                        LOGGER.warning("Could not stop %s: %s", player_id, exc)
+                    self._power_cycle_receiver(player_id, current_index)
+                    self._skip_storm.pop(player_id, None)
+                    self._last_queue_index.pop(player_id, None)
+                    self._clear_playback_progress_state(player_id)
+                    continue
+
                 self._handle_playback_progress(
                     player_id,
                     now,
@@ -1342,12 +1408,18 @@ class SessionManager:
                     current_track_id,
                     total_tracks,
                 )
+                if playback_time > 1.0:
+                    self._last_playback_at[player_id] = now
                 self._prune_played_queue_entries(player_id, current_index)
             elif mode in {"pause", "stop"}:
                 self._clear_playback_progress_state(player_id)
                 continue
 
             if remaining > int(session["low_watermark"]):
+                continue
+
+            if self._skip_storm.get(player_id):
+                # Niet bijvullen terwijl LMS de wachtrij aan het doorskippen is.
                 continue
 
             tracks = self.selector.choose_tracks(
@@ -1397,6 +1469,19 @@ class SessionManager:
             raise RequestError(f"Playlist {playlist_name} returned no tracks after filtering.", HTTPStatus.CONFLICT)
 
         self.lms.power_on(resolved_player_id)
+
+        idle_reset_after = self.config.receiver_reset_after_idle_seconds
+        last_playback = self._last_playback_at.get(resolved_player_id)
+        if idle_reset_after > 0 and (
+            last_playback is None or time.time() - last_playback > idle_reset_after
+        ):
+            LOGGER.info(
+                "Player %s has not played for %s minutes; resetting the Cast receiver before starting.",
+                resolved_player_id,
+                idle_reset_after // 60,
+            )
+            self._reset_receiver(resolved_player_id)
+
         self.lms.play_track(resolved_player_id, tracks[0]["id"])
         for track in tracks[1:]:
             self.lms.add_track(resolved_player_id, track["id"])

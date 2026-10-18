@@ -95,6 +95,7 @@ Managed-session recovery is controlled by these engine settings:
 - `player_recovery_enabled`: keep sessions alive and try to recover after unintended player-side failures
 - `player_recovery_grace_seconds`: wait before rebuilding an unexpectedly empty queue
 - `player_recovery_cooldown_seconds`: minimum time between recovery attempts for the same player
+- `receiver_reset_after_idle_seconds`: before a start on a player that has not played for this long, power-cycle its Cast receiver first (a receiver that has been idle for hours sometimes rejects the first load); `0` disables it
 - `queue_pruning_enabled`: remove already played queue entries during normal playback maintenance
 - `queue_prune_keep_played_tracks`: how many played items to keep behind the current track
 - `queue_prune_min_tracks`: minimum number of removable played items before pruning runs
@@ -129,6 +130,7 @@ Recovery behavior:
 - if a player remains in `play` but the reported playback time stops advancing for too long, the engine can reopen the current queue entry to kick CastBridge/Chromecast back into playback
 - a Cast receiver can also get stuck while the bridge keeps reporting `mode=play` with the time frozen at 0. That is a rejected load, so reopening the track does not help: the engine power-cycles the player right away (`power 0` → `power 1` → reopen) after the shorter `stalled_playback_start_grace_seconds`. A stall that happens mid-track is first handled with a reopen; if that fails, the engine power-cycles, and only if it still fails does it skip to the next queue entry
 - if a managed player disconnects and later reconnects, the engine can resume playback or rebuild the queue — unless the player was stopped or paused by the user, in which case it stays quiet
+- if LMS starts skipping through the queue because the player rejects every stream (queue index jumps while the playback time stays at 0), the engine stops the player, power-cycles the receiver and resumes the current entry; it also stops topping up while this lasts, so a broken device cannot turn into an endless "next, next, next" loop
 - if a managed queue disappears unexpectedly, the engine can rebuild it after the configured grace period
 - if a user pauses or stops the player and the queue is still intact, the engine keeps the session suspended and does not auto-restart
 - `POST /api/stop` still disables management for that player immediately
