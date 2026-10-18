@@ -53,6 +53,15 @@ def json_response(handler: BaseHTTPRequestHandler, status: int, payload: Dict[st
     handler.wfile.write(raw)
 
 
+def text_response(handler: BaseHTTPRequestHandler, status: int, text: str) -> None:
+    raw = text.encode("utf-8")
+    handler.send_response(status)
+    handler.send_header("Content-Type", "text/plain; charset=utf-8")
+    handler.send_header("Content-Length", str(len(raw)))
+    handler.end_headers()
+    handler.wfile.write(raw)
+
+
 class RequestError(Exception):
     def __init__(self, message: str, status: int = HTTPStatus.BAD_REQUEST):
         super().__init__(message)
@@ -1601,6 +1610,47 @@ class SessionManager:
         self.state_store.stop_session(player_id)
         self._clear_runtime_state(player_id)
 
+    def player_state(
+        self,
+        player_name: Optional[str],
+        player_id: Optional[str],
+    ) -> Dict[str, Any]:
+        """Actuele stand van één speler, voor Homey-flows.
+
+        `playing` is true zodra LMS daadwerkelijk afspeelt, ook als dat buiten de
+        engine om gaat. `session` zegt of de engine een playlist beheert.
+        """
+        player = self.lms.resolve_player(player_name, player_id)
+        pid = player["playerid"]
+        status = self.lms.status(pid)
+        mode = str(status.get("mode") or "").lower()
+        session = self.state_store.get_session(pid)
+        playing = mode == "play"
+        stop_pending = bool(session and session.get("stop_after_track"))
+
+        if stop_pending:
+            state = "stopping_after_track"
+        elif session and playing:
+            state = "playing"
+        elif session:
+            state = "suspended"
+        elif playing:
+            state = "external"
+        else:
+            state = "idle"
+
+        return {
+            "player_id": pid,
+            "player_name": player["name"],
+            "playing": playing,
+            "session": session is not None,
+            "stop_pending": stop_pending,
+            "state": state,
+            "playlist": session["playlist_name"] if session else None,
+            "mode": mode or None,
+            "power": status.get("power"),
+        }
+
     def toggle_playlist(
         self,
         playlist_name: Optional[str],
@@ -1772,6 +1822,23 @@ class PlaylistApiHandler(BaseHTTPRequestHandler):
 
             if route == "/api/sessions":
                 json_response(self, HTTPStatus.OK, {"sessions": self.engine.state_store.list_sessions()})
+                return
+
+            if route in {"/api/state", "/api/player_state"}:
+                player_name = self._param(payload, query, "player_name")
+                player_id = self._param(payload, query, "player_id")
+                json_response(
+                    self,
+                    HTTPStatus.OK,
+                    self.engine.session_manager.player_state(player_name, player_id),
+                )
+                return
+
+            if route == "/api/playing":
+                player_name = self._param(payload, query, "player_name")
+                player_id = self._param(payload, query, "player_id")
+                state = self.engine.session_manager.player_state(player_name, player_id)
+                text_response(self, HTTPStatus.OK, "true" if state.get("playing") else "false")
                 return
 
             if route == "/api/start":

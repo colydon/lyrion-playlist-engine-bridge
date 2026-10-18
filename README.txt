@@ -408,3 +408,29 @@ De engine kent de stand en beslist, dus Homey hoeft geen toestand bij te houden:
 Elke druk op de fysieke knop stuurt dus dezelfde POST, ongeacht de stand van de
 virtuele schakelaar. De response bevat "state" en "stop_pending" als je de
 schakelaar wilt bijwerken; de knopflow hoeft er niets mee te doen.
+
+SPEELT ER IETS? (voor notificaties en andere flows)
+    GET http://192.168.0.54:8787/api/state?player_name=KantoorSpeaker&token=<token>
+    -> {"player_id":"...","player_name":"KantoorSpeaker","playing":true,
+        "session":true,"stop_pending":false,"state":"playing",
+        "playlist":"DagAvondMix","mode":"play","power":1}
+
+Voor de simpelste vergelijking in een Advanced Flow is er ook platte tekst:
+    GET http://192.168.0.54:8787/api/playing?player_name=KantoorSpeaker&token=<token>
+    -> true
+    -> false
+
+Betekenis van de velden:
+- session      : de engine beheert een playlist op deze speler (dit is precies
+                 wat de oude virtuele schakelaar "aan" betekende)
+- playing      : LMS speelt nu daadwerkelijk af (ook als dat buiten de engine om gaat)
+- stop_pending : er loopt een "stop na dit nummer"
+- state        : idle | external | playing | suspended | stopping_after_track
+
+Advies voor notificaties:
+- wil je "playlist actief" aanhouden zoals vroeger -> gebruik session
+- wil je "er is nu geluid" -> gebruik playing
+
+Voorbeeld in Homey (Advanced Flow): HTTP GET met "JSON" aan, daarna een
+logica-kaart op de tag playing of session. Of gebruik /api/playing en vergelijk
+de tekst met true.

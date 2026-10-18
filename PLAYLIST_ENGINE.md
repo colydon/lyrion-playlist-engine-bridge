@@ -125,6 +125,22 @@ List players:
 GET http://<engine-host>:8787/api/players?token=<token>
 ```
 
+Player state for automations (one call, no list parsing):
+
+```text
+GET http://<engine-host>:8787/api/state?player_name=KantoorSpeaker&token=<token>
+-> {"player_id":"...","player_name":"KantoorSpeaker","playing":true,"session":true,
+    "stop_pending":false,"state":"playing","playlist":"DagAvondMix","mode":"play","power":1}
+
+GET http://<engine-host>:8787/api/playing?player_name=KantoorSpeaker&token=<token>
+-> true | false   (plain text, easiest to compare in Homey)
+```
+
+- `session`: the engine manages a playlist on this player
+- `playing`: LMS is actually playing (also when playback was started outside the engine)
+- `state`: `idle`, `external` (playing without an engine session), `playing`, `suspended`
+  (paused/stopped with an intact managed queue) or `stopping_after_track`
+
 Recovery behavior:
 
 - if a player remains in `play` but the reported playback time stops advancing for too long, the engine can reopen the current queue entry to kick CastBridge/Chromecast back into playback
