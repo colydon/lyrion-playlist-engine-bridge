@@ -337,11 +337,14 @@ binaries sox, flac, faad, mac en wvunpack. De muziekbibliotheek is volledig mp3
 
 Instellingen in /usr/local/slimserver/prefs/castbridge.xml (14-10-2026):
 
-- Kantoor, Beneden, Hele Huis, KantoorSpeaker -> <mode>mp3</mode> + <sample_rate>96000</sample_rate>
-  Deze spelers hebben last van de flac-stroom: Kantoor gaf http-fouten, de
-  Cast-groepen accepteren geen flac, en de JBL KantoorSpeaker stopte na ~30 s met
-  een "http parsing error" in de bridge (tijd bleef op ~31 s staan, daarna stil).
-  mp3 wordt 1-op-1 doorgegeven.
+- Beneden, Hele Huis -> <mode>mp3</mode> + <sample_rate>96000</sample_rate>
+  Deze spelers hebben last van de flac-stroom: Kantoor gaf http-fouten en de
+  Cast-groepen accepteren geen flac. mp3 wordt 1-op-1 doorgegeven.
+- KantoorSpeaker (JBL) -> <mode>mp3</mode>, zonder <sample_rate> (erft 48000), plus
+  <send_metadata>0</send_metadata> en <send_coverart>0</send_coverart>.
+  De JBL heeft geen scherm; metadata en hoesjes kosten hem bij elke trackwissel
+  extra werk. Sinds die twee uit staan zijn de lange stiltes bij een wissel
+  (14-15 s) niet meer gezien; gemeten wissels: 1,5-5 s.
   Nadeel: een mp3-stroom heeft geen lengte, dus op een Nest Hub met scherm tonen
   deze spelers geen voortgangsbalk en geen afstandsbediening.
   Let op: een nieuw toegevoegde speaker erft de <common>-instellingen (flc/48k).
@@ -381,3 +384,27 @@ het Cast-apparaat meteen los en keert het scherm direct terug naar zijn eigen
 weergave (zonder de 30 s durende "receiver"-melding).
 Zonder "when" (of met "when":"now") stopt alleen het beheer van de engine, zoals
 voorheen. In Homey: een HTTP-request-kaartje met bovenstaande body.
+
+DIRECT STOPPEN (hard)
+    POST http://192.168.0.54:8787/api/stop
+    Header: X-API-Key: <token>
+    Body: {"player_name":"Slaapkamer","when":"hard"}
+
+Dit stopt de weergave meteen: stop, wachtrij leeg, speler uit en de engine-sessie
+opgeruimd. Daarna kan niets de stream nog hervatten. "now" laat alleen het beheer
+los; "hard" (ook "hard-stop", "immediate", "force" of "stop") stopt echt.
+
+ÉÉN KNOP, DRIE STANDEN (aanbevolen voor Homey)
+    POST http://192.168.0.54:8787/api/toggle
+    Header: X-API-Key: <token>
+    Body: {"player_name":"Slaapkamer","playlist":"DagAvondMix"}
+
+De engine kent de stand en beslist, dus Homey hoeft geen toestand bij te houden:
+
+- geen sessie            -> playlist starten            (state: playing)
+- sessie, geen vlag      -> stoppen na dit nummer        (state: stopping_after_track)
+- sessie met die vlag    -> direct alles stoppen         (state: stopped)
+
+Elke druk op de fysieke knop stuurt dus dezelfde POST, ongeacht de stand van de
+virtuele schakelaar. De response bevat "state" en "stop_pending" als je de
+schakelaar wilt bijwerken; de knopflow hoeft er niets mee te doen.

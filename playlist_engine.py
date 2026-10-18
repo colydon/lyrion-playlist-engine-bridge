@@ -409,6 +409,15 @@ class StateStore:
             connection.execute("delete from sessions where player_id = ?", (player_id,))
             connection.execute("delete from history where player_id = ?", (player_id,))
 
+    def get_session(self, player_id: str) -> Optional[Dict[str, Any]]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "select player_id, player_name, playlist_name, started_at, initial_count, topup_count, "
+                "low_watermark, stop_after_track from sessions where player_id = ? and active = 1",
+                (player_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
     def list_sessions(self) -> List[Dict[str, Any]]:
         with self._connect() as connection:
             rows = connection.execute(
@@ -559,6 +568,9 @@ class LmsClient:
 
     def stop(self, player_id: str) -> None:
         self._request(player_id, ["stop"])
+
+    def clear_queue(self, player_id: str) -> None:
+        self._request(player_id, ["playlist", "clear"])
 
     def power_off(self, player_id: str) -> None:
         self._request(player_id, ["power", "0"])
@@ -1367,16 +1379,7 @@ class SessionManager:
                 previous_index = self._last_queue_index.get(player_id)
                 self._last_queue_index[player_id] = current_index
                 if playback_time <= 1.0 and previous_index is not None and current_index > previous_index:
-                    storm = self._skip_storm.get(player_id, 0) + 1
-                    self._skip_storm[player_id] = storm
-                    LOGGER.info(
-                        "LMS is skipping through the queue on %s (index %s -> %s, playback time %.2fs); "
-                        "not topping up while this continues.",
-                        player_id,
-                        previous_index,
-                        current_index,
-                        playback_time,
-                    )
+                    self._skip_storm[player_id] = self._skip_storm.get(player_id, 0) + 1
                 else:
                     self._skip_storm.pop(player_id, None)
 
@@ -1384,8 +1387,11 @@ class SessionManager:
                     # Het apparaat weigert elke stream: stop de skip-lus en zet de
                     # receiver opnieuw op in plaats van de wachtrij te blijven vullen.
                     LOGGER.warning(
-                        "Stopping the skip loop on %s and power-cycling the Cast receiver.",
+                        "LMS is skipping through the queue on %s (index %s -> %s, playback time 0s); "
+                        "stopping the skip loop and power-cycling the Cast receiver.",
                         player_id,
+                        previous_index,
+                        current_index,
                     )
                     try:
                         self.lms.stop(player_id)
@@ -1525,6 +1531,16 @@ class SessionManager:
         player = self.lms.resolve_player(player_name, player_id)
         pid = player["playerid"]
 
+        if when in {"hard", "hard-stop", "immediate", "force", "stop"}:
+            # Direct helemaal stoppen: geen wachtrij meer, speler uit, sessie weg.
+            self.hard_stop(pid)
+            return {
+                "player_id": pid,
+                "player_name": player["name"],
+                "stopped": True,
+                "hard": True,
+            }
+
         if when in {"track", "end-of-track", "after-track", "after_current_track"}:
             # Laat het huidige nummer afspelen en knip de rest van de wachtrij af.
             # De sessie blijft staan met een vlag; de onderhoudslus zet de speler
@@ -1562,6 +1578,77 @@ class SessionManager:
             "player_id": pid,
             "player_name": player["name"],
             "stopped": True,
+        }
+
+    def hard_stop(self, player_id: str) -> None:
+        """Stop de weergave direct: speler uit en sessie opruimen.
+
+        Dit is de "nog een keer op de knop"-actie: geen wachtrij die doorloopt,
+        geen automatische herstart.
+        """
+        try:
+            self.lms.stop(player_id)
+        except RequestError as exc:
+            LOGGER.warning("Could not stop %s: %s", player_id, exc)
+        try:
+            self.lms.clear_queue(player_id)
+        except RequestError as exc:
+            LOGGER.warning("Could not clear the queue of %s: %s", player_id, exc)
+        try:
+            self.lms.power_off(player_id)
+        except RequestError as exc:
+            LOGGER.warning("Could not power off %s: %s", player_id, exc)
+        self.state_store.stop_session(player_id)
+        self._clear_runtime_state(player_id)
+
+    def toggle_playlist(
+        self,
+        playlist_name: Optional[str],
+        player_name: Optional[str],
+        player_id: Optional[str],
+    ) -> Dict[str, Any]:
+        """Eén knop, drie toestanden; de engine is de enige die de stand kent.
+
+        - geen sessie            -> playlist starten            (state: playing)
+        - sessie, geen vlag      -> stoppen na dit nummer       (state: stopping_after_track)
+        - sessie met vlag        -> direct alles stoppen        (state: stopped)
+        """
+        player = self.lms.resolve_player(player_name, player_id)
+        pid = player["playerid"]
+        session = self.state_store.get_session(pid)
+
+        if session is None:
+            if not playlist_name:
+                raise RequestError(
+                    "Er loopt geen playlist op deze speler; geef een playlist mee om te starten.",
+                    HTTPStatus.BAD_REQUEST,
+                )
+            self.start_playlist(playlist_name, player_name, pid)
+            return {
+                "player_id": pid,
+                "player_name": player["name"],
+                "playlist": playlist_name,
+                "state": "playing",
+                "stop_pending": False,
+            }
+
+        if session.get("stop_after_track"):
+            self.hard_stop(pid)
+            return {
+                "player_id": pid,
+                "player_name": player["name"],
+                "playlist": session["playlist_name"],
+                "state": "stopped",
+                "stop_pending": False,
+            }
+
+        self.stop_playlist(player_name, pid, "track")
+        return {
+            "player_id": pid,
+            "player_name": player["name"],
+            "playlist": session["playlist_name"],
+            "state": "stopping_after_track",
+            "stop_pending": True,
         }
 
     def _trim_queue_to_current_track(self, player_id: str) -> int:
@@ -1711,6 +1798,20 @@ class PlaylistApiHandler(BaseHTTPRequestHandler):
                 when = (self._param(payload, query, "when") or "now").strip().lower()
                 LOGGER.info("Stop request: player_name=%s player_id=%s when=%s", player_name, player_id, when)
                 result = self.engine.session_manager.stop_playlist(player_name, player_id, when)
+                json_response(self, HTTPStatus.OK, result)
+                return
+
+            if route == "/api/toggle":
+                playlist = self._param(payload, query, "playlist")
+                player_name = self._param(payload, query, "player_name")
+                player_id = self._param(payload, query, "player_id")
+                LOGGER.info(
+                    "Toggle request: playlist=%s player_name=%s player_id=%s",
+                    playlist,
+                    player_name,
+                    player_id,
+                )
+                result = self.engine.session_manager.toggle_playlist(playlist, player_name, player_id)
                 json_response(self, HTTPStatus.OK, result)
                 return
 

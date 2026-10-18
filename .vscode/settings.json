@@ -3,6 +3,10 @@
     "/^/tmp/cti_ssh/rcp\\.sh /tmp/cti_ref/cast_gids\\.py tc@192\\.168\\.0\\.54:/tmp/cast_gids\\.py >/dev/null 2>&1; /tmp/cti_ssh/rsh\\.sh '/usr/local/bin/python3\\.11 /tmp/cast_gids\\.py' 2>&1 \\| tail -45$/": {
       "approve": true,
       "matchCommandLine": true
+    },
+    "/^cd /home/rick/dev/cti_dagmix_v3 && python3 -m py_compile playlist_engine\\.py && echo COMPILE_OK && grep -n \"Optional\\\\\\[Dict\\\\\\[str, Any\\\\\\]\\\\\\]\" playlist_engine\\.py \\| head -3$/": {
+      "approve": true,
+      "matchCommandLine": true
     }
   }
 }

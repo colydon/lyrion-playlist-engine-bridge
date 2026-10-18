@@ -236,6 +236,27 @@ Body: {"player_name":"Kantoor","when":"track"}
 `when` accepts `track`, `end-of-track`, `after-track` or `after_current_track`. Without
 `when` (or with `when: now`) only the engine's management stops, as before.
 
+Stop immediately (`when: hard`, also `hard-stop`, `immediate`, `force`, `stop`): stops
+playback, clears the queue, powers the player off and removes the session, so nothing can
+resume the stream.
+
+One button, three states (recommended for a physical button in Homey):
+
+```text
+POST /api/toggle
+Header: X-API-Key: <token>
+Body: {"player_name":"Slaapkamer","playlist":"DagAvondMix"}
+```
+
+The engine owns the state, so Homey does not have to:
+
+- no session -> start the playlist (`state: playing`)
+- session without the flag -> stop after the current track (`state: stopping_after_track`)
+- session with the flag -> stop immediately (`state: stopped`)
+
+Every press sends the same request, regardless of the virtual switch position; the
+response contains `state` and `stop_pending` if you want to mirror it.
+
 Wat de engine daarbij doet:
 
 - De wachtrij wordt teruggeknipt tot het nummer dat nu speelt; daarna wordt niet meer
