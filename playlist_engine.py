@@ -566,6 +566,16 @@ class LmsClient:
     def add_track(self, player_id: str, track_id: int) -> None:
         self._request(player_id, ["playlist", "addtracks", f"track.id={track_id}"])
 
+    def add_tracks(self, player_id: str, track_ids: Sequence[int]) -> None:
+        """Voeg meerdere tracks in één LMS-verzoek toe."""
+        ids = [int(track_id) for track_id in track_ids]
+        if not ids:
+            return
+        if len(ids) == 1:
+            self.add_track(player_id, ids[0])
+            return
+        self._request(player_id, ["playlistcontrol", "cmd:add", "track_id:" + ",".join(str(i) for i in ids)])
+
     def play_index(self, player_id: str, index: int) -> None:
         self._request(player_id, ["playlist", "index", max(0, int(index))])
 
@@ -1022,9 +1032,9 @@ class SessionManager:
         """
         try:
             self.lms.power_off(player_id)
-            time.sleep(3.5)
+            time.sleep(2.0)
             self.lms.power_on(player_id)
-            time.sleep(1.5)
+            time.sleep(1.0)
         except RequestError as exc:
             LOGGER.warning("Could not reset the receiver of %s: %s", player_id, exc)
 
@@ -1447,22 +1457,22 @@ class SessionManager:
                 LOGGER.warning("No top-up tracks found for %s on %s", session["playlist_name"], player_id)
                 continue
 
-            for track in tracks:
-                self.lms.add_track(player_id, track["id"])
+            self.lms.add_tracks(player_id, [track["id"] for track in tracks])
 
             if remaining == 0:
                 self.lms.play(player_id)
-
             self.state_store.add_history(player_id, session["playlist_name"], [track["id"] for track in tracks])
             LOGGER.info("Added %s tracks to %s on %s", len(tracks), session["playlist_name"], player_id)
 
     def start_playlist(self, playlist_name: str, player_name: Optional[str], player_id: Optional[str]) -> Dict[str, Any]:
+        gestart_op = time.time()
         playlist = self.config.playlist_definition(playlist_name)
         effective_playlist = self.config.resolve_playlist_definition(playlist_name)
         player = self.lms.resolve_player(player_name, player_id)
         resolved_player_id = player["playerid"]
         resolved_player_name = player["name"]
         current_status = self.lms.status(resolved_player_id)
+        was_powered_off = int(current_status.get("power") if current_status.get("power") is not None else 1) == 0
         queue_ids = [int(item["id"]) for item in current_status.get("playlist_loop", []) if str(item.get("id", "")).isdigit()]
 
         tracks: List[Dict[str, Any]] = []
@@ -1483,28 +1493,46 @@ class SessionManager:
         if not tracks:
             raise RequestError(f"Playlist {playlist_name} returned no tracks after filtering.", HTTPStatus.CONFLICT)
 
+        gekozen_op = time.time()
         self.lms.power_on(resolved_player_id)
 
         idle_reset_after = self.config.receiver_reset_after_idle_seconds
         last_playback = self._last_playback_at.get(resolved_player_id)
-        if idle_reset_after > 0 and (
+        receiver_gereset = False
+        if idle_reset_after > 0 and not was_powered_off and (
             last_playback is None or time.time() - last_playback > idle_reset_after
         ):
+            # Alleen nodig als de receiver aan stond maar lang niets deed. Stond hij
+            # al uit, dan is de power-on zelf al een verse sessie en kost een extra
+            # power-cycle alleen maar tijd.
             LOGGER.info(
                 "Player %s has not played for %s minutes; resetting the Cast receiver before starting.",
                 resolved_player_id,
                 idle_reset_after // 60,
             )
             self._reset_receiver(resolved_player_id)
+            receiver_gereset = True
 
+        klaar_met_receiver = time.time()
         self.lms.play_track(resolved_player_id, tracks[0]["id"])
-        for track in tracks[1:]:
-            self.lms.add_track(resolved_player_id, track["id"])
+        self.lms.add_tracks(resolved_player_id, [track["id"] for track in tracks[1:]])
         self.lms.play(resolved_player_id)
+        wachtrij_gevuld_op = time.time()
 
         self._clear_runtime_state(resolved_player_id)
         self.state_store.save_session(resolved_player_id, resolved_player_name, playlist_name, playlist)
         self.state_store.add_history(resolved_player_id, playlist_name, [track["id"] for track in tracks])
+
+        LOGGER.info(
+            "Start %s on %s: select %.2fs, receiver %.2fs%s, queue %.2fs, total %.2fs",
+            playlist_name,
+            resolved_player_id,
+            gekozen_op - gestart_op,
+            klaar_met_receiver - gekozen_op,
+            " (reset)" if receiver_gereset else "",
+            wachtrij_gevuld_op - klaar_met_receiver,
+            wachtrij_gevuld_op - gestart_op,
+        )
 
         return {
             "player_id": resolved_player_id,

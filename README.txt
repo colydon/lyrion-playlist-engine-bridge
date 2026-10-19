@@ -409,6 +409,15 @@ Elke druk op de fysieke knop stuurt dus dezelfde POST, ongeacht de stand van de
 virtuele schakelaar. De response bevat "state" en "stop_pending" als je de
 schakelaar wilt bijwerken; de knopflow hoeft er niets mee te doen.
 
+SNELHEID VAN EEN START
+De engine logt per start één regel met de opbouw:
+    Start DagMix on cc:cc:...: select 1.97s, receiver 0.01s, queue 0.26s, total 2.24s
+- select   : playlist-SQL en trackkeuze (dit is normaal het grootste deel)
+- receiver : power-on of, alleen als de receiver aan stond maar lang niets deed,
+             een power-cycle; staat de speler al uit, dan kost dit vrijwel niets
+- queue    : eerste track starten en de rest in één verzoek toevoegen
+Zo zie je meteen waar tijd verloren gaat als een start weer langzaam voelt.
+
 SPEELT ER IETS? (voor notificaties en andere flows)
     GET http://192.168.0.54:8787/api/state?player_name=KantoorSpeaker&token=<token>
     -> {"player_id":"...","player_name":"KantoorSpeaker","playing":true,
