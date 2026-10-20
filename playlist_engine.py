@@ -952,6 +952,10 @@ class SessionManager:
         # door de hele wachtrij. Bijgevullen zou dat alleen maar verergeren.
         self._last_queue_index: Dict[str, int] = {}
         self._skip_storm: Dict[str, int] = {}
+        # Houdt stop/trim en het bijvullen van de wachtrij uit elkaars vaarwater:
+        # anders kan een top-up die al liep nét na de trim tracks toevoegen en
+        # speelt de speler na "stop na dit nummer" gewoon door.
+        self._session_lock = threading.RLock()
         # Laatste keer dat er echt werd afgespeeld; gebruikt om een lang slapende
         # Cast-receiver eerst schoon te herstarten voor we een stream laden.
         self._last_playback_at: Dict[str, float] = {}
@@ -1222,12 +1226,21 @@ class SessionManager:
             return False
 
         self.lms.power_on(player_id)
-        self.lms.play_track(player_id, tracks[0]["id"])
-        for track in tracks[1:]:
-            self.lms.add_track(player_id, track["id"])
-        self.lms.play(player_id)
+        with self._session_lock:
+            actuele_sessie = self.state_store.get_session(player_id)
+            if actuele_sessie is None or actuele_sessie.get("stop_after_track"):
+                LOGGER.info(
+                    "Not rebuilding the queue for %s because the session was stopped in the meantime.",
+                    player_id,
+                )
+                return False
+            self.lms.play_track(player_id, tracks[0]["id"])
+            self.lms.add_tracks(player_id, [track["id"] for track in tracks[1:]])
+            self.lms.play(player_id)
+            self.state_store.add_history(
+                player_id, str(session["playlist_name"]), [track["id"] for track in tracks]
+            )
 
-        self.state_store.add_history(player_id, str(session["playlist_name"]), [track["id"] for track in tracks])
         self._empty_queue_since.pop(player_id, None)
         self._manual_suspend_reason.pop(player_id, None)
         self._recover_after_disconnect.pop(player_id, None)
@@ -1285,6 +1298,18 @@ class SessionManager:
                         LOGGER.warning("Could not power off %s: %s", player_id, exc)
                     self.state_store.stop_session(player_id)
                     self._clear_runtime_state(player_id)
+                    continue
+
+                if total_tracks > current_index + 1:
+                    # Er zijn (bijv. door een top-up die al liep) tracks bijgekomen
+                    # terwijl de stop al aangevraagd was: opnieuw afknippen.
+                    LOGGER.info(
+                        "Queue for %s grew while a stop was pending (%s tracks); trimming it again.",
+                        player_id,
+                        total_tracks,
+                    )
+                    self._trim_queue_to_current_track(player_id)
+                    self._clear_playback_progress_state(player_id)
                     continue
 
                 # Een sessie met deze vlag wordt niet meer bijgevuld, dus een
@@ -1457,11 +1482,24 @@ class SessionManager:
                 LOGGER.warning("No top-up tracks found for %s on %s", session["playlist_name"], player_id)
                 continue
 
-            self.lms.add_tracks(player_id, [track["id"] for track in tracks])
+            with self._session_lock:
+                # De keuze hierboven kan even geduurd hebben; controleer opnieuw of
+                # er in de tussentijd geen stop is aangevraagd.
+                actuele_sessie = self.state_store.get_session(player_id)
+                if actuele_sessie is None or actuele_sessie.get("stop_after_track"):
+                    LOGGER.info(
+                        "Not topping up %s because the session was stopped in the meantime.",
+                        player_id,
+                    )
+                    continue
 
-            if remaining == 0:
-                self.lms.play(player_id)
-            self.state_store.add_history(player_id, session["playlist_name"], [track["id"] for track in tracks])
+                self.lms.add_tracks(player_id, [track["id"] for track in tracks])
+
+                if remaining == 0:
+                    self.lms.play(player_id)
+                self.state_store.add_history(
+                    player_id, session["playlist_name"], [track["id"] for track in tracks]
+                )
             LOGGER.info("Added %s tracks to %s on %s", len(tracks), session["playlist_name"], player_id)
 
     def start_playlist(self, playlist_name: str, player_name: Optional[str], player_id: Optional[str]) -> Dict[str, Any]:
@@ -1514,14 +1552,15 @@ class SessionManager:
             receiver_gereset = True
 
         klaar_met_receiver = time.time()
-        self.lms.play_track(resolved_player_id, tracks[0]["id"])
-        self.lms.add_tracks(resolved_player_id, [track["id"] for track in tracks[1:]])
-        self.lms.play(resolved_player_id)
-        wachtrij_gevuld_op = time.time()
+        with self._session_lock:
+            self.lms.play_track(resolved_player_id, tracks[0]["id"])
+            self.lms.add_tracks(resolved_player_id, [track["id"] for track in tracks[1:]])
+            self.lms.play(resolved_player_id)
 
-        self._clear_runtime_state(resolved_player_id)
-        self.state_store.save_session(resolved_player_id, resolved_player_name, playlist_name, playlist)
-        self.state_store.add_history(resolved_player_id, playlist_name, [track["id"] for track in tracks])
+            self._clear_runtime_state(resolved_player_id)
+            self.state_store.save_session(resolved_player_id, resolved_player_name, playlist_name, playlist)
+            self.state_store.add_history(resolved_player_id, playlist_name, [track["id"] for track in tracks])
+        wachtrij_gevuld_op = time.time()
 
         LOGGER.info(
             "Start %s on %s: select %.2fs, receiver %.2fs%s, queue %.2fs, total %.2fs",
@@ -1583,31 +1622,32 @@ class SessionManager:
             # De sessie blijft staan met een vlag; de onderhoudslus zet de speler
             # uit zodra het nummer klaar is, zodat de bridge het Cast-apparaat
             # meteen loslaat (anders blijft het scherm 30 s op de receiver staan).
-            kept = self._trim_queue_to_current_track(pid)
-            status = self.lms.status(pid)
-            if str(status.get("mode") or "").lower() in {"stop", "pause"}:
-                # Er speelt niets meer, dus er valt niets af te maken: meteen afronden.
-                try:
-                    self.lms.power_off(pid)
-                except RequestError as exc:
-                    LOGGER.warning("Could not power off %s: %s", pid, exc)
-                self.state_store.stop_session(pid)
-                self._clear_runtime_state(pid)
+            with self._session_lock:
+                kept = self._trim_queue_to_current_track(pid)
+                status = self.lms.status(pid)
+                if str(status.get("mode") or "").lower() in {"stop", "pause"}:
+                    # Er speelt niets meer, dus er valt niets af te maken: meteen afronden.
+                    try:
+                        self.lms.power_off(pid)
+                    except RequestError as exc:
+                        LOGGER.warning("Could not power off %s: %s", pid, exc)
+                    self.state_store.stop_session(pid)
+                    self._clear_runtime_state(pid)
+                    return {
+                        "player_id": pid,
+                        "player_name": player["name"],
+                        "stopped": True,
+                        "after_current_track": False,
+                        "tracks_left_in_queue": kept,
+                    }
+                self.state_store.set_stop_after_track(pid, True)
                 return {
                     "player_id": pid,
                     "player_name": player["name"],
                     "stopped": True,
-                    "after_current_track": False,
+                    "after_current_track": True,
                     "tracks_left_in_queue": kept,
                 }
-            self.state_store.set_stop_after_track(pid, True)
-            return {
-                "player_id": pid,
-                "player_name": player["name"],
-                "stopped": True,
-                "after_current_track": True,
-                "tracks_left_in_queue": kept,
-            }
 
         self.state_store.stop_session(pid)
         self._clear_runtime_state(pid)
@@ -1623,21 +1663,21 @@ class SessionManager:
         Dit is de "nog een keer op de knop"-actie: geen wachtrij die doorloopt,
         geen automatische herstart.
         """
-        try:
-            self.lms.stop(player_id)
-        except RequestError as exc:
-            LOGGER.warning("Could not stop %s: %s", player_id, exc)
-        try:
-            self.lms.clear_queue(player_id)
-        except RequestError as exc:
-            LOGGER.warning("Could not clear the queue of %s: %s", player_id, exc)
-        try:
-            self.lms.power_off(player_id)
-        except RequestError as exc:
-            LOGGER.warning("Could not power off %s: %s", player_id, exc)
-        self.state_store.stop_session(player_id)
-        self._clear_runtime_state(player_id)
-
+        with self._session_lock:
+            try:
+                self.lms.stop(player_id)
+            except RequestError as exc:
+                LOGGER.warning("Could not stop %s: %s", player_id, exc)
+            try:
+                self.lms.clear_queue(player_id)
+            except RequestError as exc:
+                LOGGER.warning("Could not clear the queue of %s: %s", player_id, exc)
+            try:
+                self.lms.power_off(player_id)
+            except RequestError as exc:
+                LOGGER.warning("Could not power off %s: %s", player_id, exc)
+            self.state_store.stop_session(player_id)
+            self._clear_runtime_state(player_id)
     def player_state(
         self,
         player_name: Optional[str],

@@ -382,6 +382,10 @@ De engine knipt de wachtrij dan af tot het nummer dat nu speelt: dat nummer loop
 gewoon af, daarna stopt het en zet de engine de speler uit. Daardoor laat de bridge
 het Cast-apparaat meteen los en keert het scherm direct terug naar zijn eigen
 weergave (zonder de 30 s durende "receiver"-melding).
+De engine bewaakt dat ook: stop/afknippen en het bijvullen van de wachtrij kunnen
+ekaar niet meer kruisen. Komt er toch een track bij terwijl de stop al wacht (bijv.
+van buiten de engine), dan knipt hij de wachtrij in de volgende ronde opnieuw af
+en logt hij "Queue for ... grew while a stop was pending".
 Zonder "when" (of met "when":"now") stopt alleen het beheer van de engine, zoals
 voorheen. In Homey: een HTTP-request-kaartje met bovenstaande body.
 

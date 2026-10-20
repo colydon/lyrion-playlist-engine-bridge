@@ -283,6 +283,9 @@ Wat de engine daarbij doet:
 - Komt de weergave niet vooruit (het nummer blijft op dezelfde tijd staan), dan wordt de
   speler alsnog uitgezet. Zonder die controle bleef een vastgelopen speler eindeloos hangen,
   omdat een sessie met deze vlag niet meer bijgevuld en niet meer gecontroleerd werd.
+- Stop en top-up sluiten elkaar uit (`_session_lock`): een top-up die al liep kan niet meer
+  toevoegen nadat de wachtrij is afgeknipt. Groeit de wachtrij toch tijdens een wachtende stop
+  (bijvoorbeeld door een andere bron), dan knipt de onderhoudslus hem opnieuw af.
 
 Elke `start` en `stop` wordt met zijn parameters gelogd
 (`Start request: playlist=… player_name=…` / `Stop request: … when=…`), zodat je in
