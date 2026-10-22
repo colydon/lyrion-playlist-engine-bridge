@@ -1074,6 +1074,20 @@ class SessionManager:
                 playback_time,
             )
             self.lms.play_index(player_id, current_index)
+        elif streak == 2 and playback_time > 1.0 and total_tracks > current_index + 1:
+            # Al eerder opnieuw geopend en nu weer stilgevallen op dezelfde track:
+            # dan is deze track (of de stream ervan) het probleem, niet de
+            # receiver. Nog een power-cycle kost minuten en helpt daar niet
+            # tegen, dus meteen doorschuiven.
+            LOGGER.warning(
+                "Track %s (queue index %s) stalled twice in a row at time %.2fs; "
+                "skipping to the next queue item instead of power-cycling again.",
+                current_track_id,
+                current_index,
+                playback_time,
+            )
+            self._stall_streak.pop(player_id, None)
+            self.lms.play_index(player_id, current_index + 1)
         elif streak == 2:
             LOGGER.warning(
                 "Playback for %s is still stalled after reopening; power-cycling the Cast receiver.",
