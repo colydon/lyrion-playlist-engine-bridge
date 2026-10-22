@@ -148,6 +148,10 @@ Recovery behavior:
 - if a managed player disconnects and later reconnects, the engine can resume playback or rebuild the queue — unless the player was stopped or paused by the user, in which case it stays quiet
 - if LMS starts skipping through the queue because the player rejects every stream (queue index jumps while the playback time stays at 0), the engine stops the player, power-cycles the receiver and resumes the current entry; it also stops topping up while this lasts, so a broken device cannot turn into an endless "next, next, next" loop
 - if a managed queue disappears unexpectedly, the engine can rebuild it after the configured grace period
+- players that are _not_ managed by the engine (a track started manually in LMS) are watched too:
+  if LMS reports `play` while the playback time stays at 0 for 25 seconds, the engine power-cycles
+  that Cast receiver once. This covers the case where a manual start lands on a receiver that was
+  just released after a managed stop. Non-Cast players and managed sessions are never touched.
 - if a user pauses or stops the player and the queue is still intact, the engine keeps the session suspended and does not auto-restart
 - `POST /api/stop` still disables management for that player immediately
 

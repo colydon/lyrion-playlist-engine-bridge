@@ -92,6 +92,7 @@ parts of DynamicPlaylists4/DynamicMix with a dedicated service that:
 - keeps adding suitable tracks when the queue runs low
 - can keep a managed player session alive through reconnects or an unexpectedly empty queue
 - can reopen the current queue item when a managed player stays in play mode but playback time stops advancing
+- kan ook een handmatig gestart liedje redden: blijft een Cast-speler op 0 s hangen, dan power-cyclet de engine de receiver eenmalig (ook zonder engine-sessie)
 - does not auto-restart when a user has paused or stopped a player that still has its queue
 - exposes a webhook API for Homey or other automation
 - keeps skip rules adjustable in JSON instead of hardwiring them into plugins

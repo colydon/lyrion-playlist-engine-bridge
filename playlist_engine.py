@@ -959,6 +959,8 @@ class SessionManager:
         # Laatste keer dat er echt werd afgespeeld; gebruikt om een lang slapende
         # Cast-receiver eerst schoon te herstarten voor we een stream laden.
         self._last_playback_at: Dict[str, float] = {}
+        # Spelers buiten een engine-sessie (handmatig gestart) die op 0 s blijven hangen.
+        self._unmanaged_stall_since: Dict[str, float] = {}
 
     def start_background_loop(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -1501,6 +1503,58 @@ class SessionManager:
                     player_id, session["playlist_name"], [track["id"] for track in tracks]
                 )
             LOGGER.info("Added %s tracks to %s on %s", len(tracks), session["playlist_name"], player_id)
+
+        self._watch_unmanaged_players(now)
+
+    def _watch_unmanaged_players(self, now: float) -> None:
+        """Red handmatig gestarte Cast-spelers die op 0 s blijven hangen.
+
+        De sessiebeheerder dekt alleen spelers met een engine-sessie. Start je
+        handmatig een liedje op een Cast-speler waarvan de receiver net is
+        losgelaten, dan blijft LMS soms 'play' melden met de tijd op 0 en doet
+        niemand iets. Deze controle power-cyclet zo'n speler eenmalig.
+        """
+        if not self.config.stalled_playback_detection_enabled:
+            return
+
+        managed = {session["player_id"] for session in self.state_store.list_sessions()}
+        try:
+            players = self.lms.list_players()
+        except RequestError:
+            return
+
+        drempel = max(25, int(self.config.stalled_playback_start_grace_seconds))
+        for player in players:
+            player_id = player.get("playerid")
+            if not player_id or player_id in managed:
+                self._unmanaged_stall_since.pop(player_id, None)
+                continue
+            if str(player.get("modelname") or "") != "CastBridge":
+                continue
+            try:
+                status = self.lms.status(player_id)
+            except RequestError:
+                continue
+
+            mode = str(status.get("mode") or "").lower()
+            playback_time = float(status.get("time") or 0.0)
+            if mode != "play" or playback_time > 1.0:
+                self._unmanaged_stall_since.pop(player_id, None)
+                continue
+
+            sinds = self._unmanaged_stall_since.setdefault(player_id, now)
+            if now - sinds < drempel:
+                continue
+            if not self._can_attempt_recovery(player_id, now):
+                continue
+
+            LOGGER.warning(
+                "Player %s is not managed by the engine but has been stuck at %.2fs; power-cycling the Cast receiver.",
+                player_id,
+                playback_time,
+            )
+            self._power_cycle_receiver(player_id, int(status.get("playlist_cur_index") or 0))
+            self._unmanaged_stall_since.pop(player_id, None)
 
     def start_playlist(self, playlist_name: str, player_name: Optional[str], player_id: Optional[str]) -> Dict[str, Any]:
         gestart_op = time.time()
