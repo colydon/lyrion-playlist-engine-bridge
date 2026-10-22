@@ -337,9 +337,23 @@ binaries sox, flac, faad, mac en wvunpack. De muziekbibliotheek is volledig mp3
 
 Instellingen in /usr/local/slimserver/prefs/castbridge.xml (14-10-2026):
 
-- Beneden, Hele Huis -> <mode>mp3</mode> + <sample_rate>96000</sample_rate>
+- Beneden, Hele Huis, WoonkamerCombo -> <mode>mp3</mode> + <sample_rate>96000</sample_rate>
   Deze spelers hebben last van de flac-stroom: Kantoor gaf http-fouten en de
   Cast-groepen accepteren geen flac. mp3 wordt 1-op-1 doorgegeven.
+  Let op: een nieuwe groep erft de <common>-instellingen (flc/48k) en slaat dan
+  het eerste nummer over of stopt na het tweede. Zet hem dan ook op mp3 + 96000.
+- WoonkamerCombo heeft daarnaast <send_metadata>1</send_metadata> en
+  <send_coverart>1</send_coverart>, zodat de Nest Hub in de groep titel, artiest
+  en hoesje toont. Omdat een mp3-stroom geen lengte meedraagt, blijft de
+  voortgangsbalk/afstandsbediening daar wel achterwege.
+- WoonkamerCombo heeft ook <stop_receiver>0</stop_receiver>. Zonder dat stopt de
+  bridge bij elke sprong in een nummer de Cast-receiver en start hem daarna
+  opnieuw; de Nest Hub laat dan steeds zijn "verbonden"-geluidje horen. Met 0
+  blijft de sessie leven: een seek hervat in ~1,5-3 s in plaats van ~6 s. Staat
+  alleen in het device-blok van de groep; de losse speakers houden de
+  <common>-waarde (1). Let op: dit is geen instelling die de plugin-UI kent, dus
+  na het opslaan van de CastBridge-instellingen in LMS kan hij verdwijnen -
+  controleer dan castbridge.xml.
 - KantoorSpeaker (JBL) -> <mode>mp3</mode>, zonder <sample_rate> (erft 48000), plus
   <send_metadata>0</send_metadata> en <send_coverart>0</send_coverart>.
   De JBL heeft geen scherm; metadata en hoesjes kosten hem bij elke trackwissel
