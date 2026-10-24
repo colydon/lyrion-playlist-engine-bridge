@@ -161,6 +161,22 @@
       "low_watermark": 4,
       "artist_repeat_window_tracks": 0
     },
+    "LoveMix": {
+      "title": "LoveMix",
+      "sql_file": "LoveMix.sql",
+      "description": "LoveMix: uitsluitend nummers met het genre Love.",
+      "initial_count": 20,
+      "topup_count": 10,
+      "low_watermark": 5
+    },
+    "HitsMix": {
+      "title": "HitsMix",
+      "sql_file": "HitsMix.sql",
+      "description": "HitsMix: uitsluitend de hits van nu (genre Hits), met de hoogste ratings het vaakst.",
+      "initial_count": 20,
+      "topup_count": 10,
+      "low_watermark": 5
+    },
     "KerstMix": {
       "title": "KerstMix",
       "sql_file": "KerstMix.sql",

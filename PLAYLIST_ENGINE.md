@@ -78,7 +78,7 @@ Example playlist catalog:
 
 `SummerMix` en `PartyMix` zijn aanvullende playlists: `DagMix`, `AvondMix` en `DagAvondMix` blijven ongewijzigd. Beide hebben geen extra Python-code nodig: `SummerMix.sql` regelt zelf de dag/avondwissel (geen TEMPO Fast/Very Fast na 18:00) en `PartyMix.sql` is een vast opzwepend profiel zonder seizoenslogica.
 
-Daarnaast zijn er nog tien thema-playlists met dezelfde opzet als `PartyMix` (één filter, vlakke waarderingscurve, geen dag/avond- of seizoenslogica): `OldiesMix`, `80sMix`, `90sMix`, `00sMix`, `10sMix`, `20sMix`, `SpaansMix`, `NederlandstaligMix`, `KerstMix` en `LUCARIXMix`. Zie `README.txt` voor de details en ze staan in `playlist_engine_config.example.json`.
+Daarnaast zijn er nog twaalf thema-playlists met dezelfde opzet als `PartyMix` (één filter, vlakke waarderingscurve, geen dag/avond- of seizoenslogica): `OldiesMix`, `80sMix`, `90sMix`, `00sMix`, `10sMix`, `20sMix`, `SpaansMix`, `NederlandstaligMix`, `KerstMix`, `LUCARIXMix`, `LoveMix` en `HitsMix`. Zie `README.txt` voor de details en ze staan in `playlist_engine_config.example.json`.
 
 `LUCARIXMix` selecteert alle nummers van de artiest LUCARIX en is de enige playlist met een eigen waarde voor `artist_repeat_window_tracks`. Die staat daar op `0`, omdat de engine anders na het eerste nummer alle overige tracks als "dezelfde artiest" zou blokkeren. De kerstnummers van LUCARIX worden alleen van 15 november t/m 26 december meegenomen; de SQL regelt dat zelf met de lokale datum.
 

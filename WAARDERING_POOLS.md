@@ -142,7 +142,7 @@ lijst: de playlist valt nooit stil.
 | DagAvondMix                                                      | A/B   | volgt de klok: 07:00–18:00 DagMix, daarna AvondMix | idem                  |
 | SummerMix                                                        | A     | summer/lounge 50%, hits 25%, overig 25%            | kerst + sinterklaas   |
 | PartyMix                                                         | A     | party 80%, hits 20%                                | geen                  |
-| OldiesMix, 80s/90s/00s/10s/20sMix, SpaansMix, NederlandstaligMix | A     | één pool: het thema                                | geen                  |
+| OldiesMix, 80s/90s/00s/10s/20sMix, SpaansMix, NederlandstaligMix, LoveMix, HitsMix | A     | één pool: het thema                                | geen                  |
 | KerstMix                                                         | A     | één pool: kerst                                    | n.v.t. (altijd kerst) |
 
 De themaplaylists hebben geen categorie-laag: daar is het thema het filter en
