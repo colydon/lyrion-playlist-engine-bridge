@@ -7,6 +7,11 @@ ENGINE_LOG="$ENGINE_DIR/playlist_engine.log"
 WATCHDOG_LOG="$ENGINE_DIR/playlist_engine_watchdog.log"
 WATCHDOG_LOCKDIR="$ENGINE_DIR/.playlist_engine_watchdog.lock"
 WATCHDOG_PIDFILE="$WATCHDOG_LOCKDIR/pid"
+RATING_SYNC_SCRIPT="$ENGINE_DIR/sync_ratings.py"
+RATING_SYNC_LOG="$ENGINE_DIR/rating_sync.log"
+# Een keer per dag als vangnet; normaal draait de sync meteen na een bibliotheekscan.
+RATING_SYNC_INTERVAL=86400
+RATING_SYNC_SETTLE=120
 PYTHON_BIN="/usr/local/bin/python3.11"
 CHECK_INTERVAL=30
 HEALTH_TIMEOUT=10
@@ -76,7 +81,10 @@ if ! mkdir "$WATCHDOG_LOCKDIR" 2>/dev/null; then
 fi
 
 echo $$ > "$WATCHDOG_PIDFILE"
-trap 'rm -rf "$WATCHDOG_LOCKDIR"' EXIT INT TERM
+# Let op: een handler op TERM/INT moet ook echt stoppen, anders negeert de
+# watchdog een kill en blijven er meerdere instanties naast elkaar leven.
+trap 'rm -rf "$WATCHDOG_LOCKDIR"' EXIT
+trap 'exit 0' INT TERM
 
 API_TOKEN="$(read_config_value token 2>/dev/null)"
 API_PORT="$(read_config_value port 2>/dev/null)"
@@ -84,6 +92,10 @@ API_PORT="$(read_config_value port 2>/dev/null)"
 HEALTH_URL="http://127.0.0.1:${API_PORT}/api/health"
 
 FAILED_CHECKS=0
+LAST_RATING_SYNC=0
+SCAN_SEEN=0
+SCAN_DONE_AT=0
+RATING_SYNC_DUE=0
 log_line "Watchdog started for $HEALTH_URL"
 
 while :; do
@@ -107,6 +119,32 @@ while :; do
             start_engine
             FAILED_CHECKS=0
         fi
+    fi
+
+    # Vul ontbrekende/gewijzigde ratings en verouderde genres aan vanuit de tags.
+    # Dat gebeurt automatisch zodra een bibliotheekscan klaar is (met een korte
+    # wachttijd zodat LMS zijn nasleep afmaakt), met een dagelijkse fallback.
+    NOW=$(date +%s)
+    if ps w | grep -q '[s]canner\.pl'; then
+        SCAN_SEEN=1
+    elif [ "$SCAN_SEEN" = "1" ]; then
+        SCAN_SEEN=0
+        SCAN_DONE_AT=$NOW
+        RATING_SYNC_DUE=1
+        log_line "Library scan finished; rating/genre sync scheduled."
+    fi
+    if [ $((NOW - LAST_RATING_SYNC)) -ge "$RATING_SYNC_INTERVAL" ]; then
+        RATING_SYNC_DUE=1
+        [ "$SCAN_DONE_AT" -gt "$NOW" ] && SCAN_DONE_AT=$NOW
+    fi
+    if [ "$RATING_SYNC_DUE" = "1" ] && [ -f "$RATING_SYNC_SCRIPT" ] \
+        && [ $((NOW - SCAN_DONE_AT)) -ge "$RATING_SYNC_SETTLE" ] \
+        && ! ps w | grep -q '[s]canner\.pl' \
+        && ! ps w | grep -q '[s]ync_ratings\.py'; then
+        LAST_RATING_SYNC=$NOW
+        RATING_SYNC_DUE=0
+        nohup "$PYTHON_BIN" -u "$RATING_SYNC_SCRIPT" >> "$RATING_SYNC_LOG" 2>&1 < /dev/null &
+        log_line "Started rating/genre sync (pid $!)."
     fi
 
     sleep "$CHECK_INTERVAL"

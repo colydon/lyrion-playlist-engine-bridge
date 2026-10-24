@@ -122,6 +122,53 @@ To add another managed playlist later:
 - restart the engine
 - it will become available to both Homey and the LMS bridge
 
+RATINGS UIT DE BESTANDSTAGS (MusicBee -> LMS)
+Nieuwe muziek wordt in MusicBee beoordeeld en die rating staat als POPM-tag in
+het mp3-bestand. CustomTagImporter kan die tag naar LMS schrijven, maar versie
+1.3.3 doet dat kapot (schrijft "ARRAY(0x...)" als waarde en zet daarna ALLE
+ratings op 0). Daarom staat `writeratingstodb` in
+prefs/plugin/customtagimporter.prefs op '0' en doet `sync_ratings.py` het werk:
+
+    /home/tc/playlist_engine/sync_ratings.py        (bron: tools/sync_ratings_from_tags.py)
+
+- houdt in `rating_sync.db` bij welke tag-waarde het per nummer laatst zag;
+- vult nummers zonder rating en werkt ratings bij waarvan de tag is veranderd;
+- overschrijft nooit een bestaande LMS-rating bij de eerste kennismaking (de
+  tags lopen namelijk niet gelijk met LMS) en zet nooit iets op 0;
+- schrijft via `ratingslight setratingpercentnoclient`, zodat LMS-cache en
+  historie (lastRated/prevRating) kloppen;
+- dwingt ook de GENRES af: een genre dat niet meer in de TCON-tag staat wordt
+  uit LMS verwijderd (LMS zelf laat zo'n oude koppeling staan), en genres die
+  daarna nergens meer aan hangen worden opgeruimd. De placeholder
+  "Geen genre" blijft staan. Genres toevoegen doet LMS zelf bij de scan.
+
+Wanneer draait het: automatisch zodra een bibliotheekscan klaar is (2 minuten
+later, zodat LMS zijn nasleep afmaakt), met een dagelijkse run als vangnet. De
+watchdog regelt dat; log: `rating_sync.log`.
+
+Let op: een nieuw bestand krijgt pas een rating/genre-controle nadat de
+bibliotheekscan het heeft ingelezen (nachtscan 03:00, of handmatig `rescan`);
+daarna pakt de sync het op.
+
+Wat hebben we nog van de plugins nodig?
+- CustomTagImporter: alleen voor de custom tags (TEMPO/TBPM) die de engine
+  gebruikt. `writeratingstodb` moet '0' blijven, anders wist hij ratings.
+- RatingsLight: voor de rating-CLI en de dagelijkse back-ups in
+  prefs/RatingsLight (die back-ups gebruik je om ratings te herstellen).
+- Rescan: de nachtelijke scan.
+
+Herinstallatie van Lyrion (kort):
+1. piCorePlayer + LMS, muziekshare op /mnt/music (CIFS), library.db in Cache/.
+2. Plugins: CastBridge, PlaylistEngineBridge (lms_plugin/), RatingsLight,
+   CustomTagImporter, Rescan. Zet in prefs/plugin/customtagimporter.prefs
+   `writeratingstodb: '0'` (enkele quotes!) en doe de castbridge.xml-instellingen
+   per device (mp3, sample_rate bij groepen, stop_receiver).
+3. Deploy playlist_engine.py + playlist_engine_config.json + watchdog +
+   sync_ratings.py in /home/tc/playlist_engine en start de watchdog uit
+   /opt/bootlocal.sh.
+4. Eenmalig `python3 sync_ratings.py` (ongeveer 10 min: leest alle tags en zet
+   de baseline), daarna is elke run enkele seconden.
+
 TIME-ROUTED PLAYLISTS
 The engine can also expose one logical playlist that switches source SQL by
 local time during queue top-ups. The example config now includes:
