@@ -132,15 +132,33 @@ prefs/plugin/customtagimporter.prefs op '0' en doet `sync_ratings.py` het werk:
     /home/tc/playlist_engine/sync_ratings.py        (bron: tools/sync_ratings_from_tags.py)
 
 - houdt in `rating_sync.db` bij welke tag-waarde het per nummer laatst zag;
-- vult nummers zonder rating en werkt ratings bij waarvan de tag is veranderd;
-- overschrijft nooit een bestaande LMS-rating bij de eerste kennismaking (de
-  tags lopen namelijk niet gelijk met LMS) en zet nooit iets op 0;
+- de TAG is leidend: met `--correct` (wat de watchdog gebruikt) wordt elke
+  LMS-rating die afwijkt van de tag meteen rechtgezet, ook als het bestand niet
+  is aangeraakt. Zonder die vlag worden alleen nieuwe nummers en gewijzigde
+  tags bijgewerkt;
+- vult nummers zonder rating en zet nooit iets op 0;
 - schrijft via `ratingslight setratingpercentnoclient`, zodat LMS-cache en
   historie (lastRated/prevRating) kloppen;
 - dwingt ook de GENRES af: een genre dat niet meer in de TCON-tag staat wordt
   uit LMS verwijderd (LMS zelf laat zo'n oude koppeling staan), en genres die
   daarna nergens meer aan hangen worden opgeruimd. De placeholder
   "Geen genre" blijft staan. Genres toevoegen doet LMS zelf bij de scan.
+
+Conversie (gemeten op deze bibliotheek): de bestanden bevatten zowel de klassieke
+WMP-waarden als de waarden die MusicBee zelf voor halve sterren schrijft. Een
+lineaire byte/255-formule is dus fout (128 zou dan 2,5 ster worden terwijl
+MusicBee 3 ster toont). Daarom een tabel:
+
+    byte  13 -> 0,5 ster       byte 186 -> 3,5 ster
+    byte  64 -> 2 ster         byte 196 -> 4 ster
+    byte 118 -> 2,5 ster       byte 242 -> 4,5 ster
+    byte 128 -> 3 ster         byte 255 -> 5 ster
+
+Tussenliggende bytes worden lineair geinterpoleerd.
+
+LET OP: omdat de tag leidend is, wordt een rating die je in LMS zelf zet (bijv.
+via de telefoon) bij de volgende sync weer teruggezet naar de tag. Beoordeel
+dus in MusicBee en sla de tags op.
 
 Wanneer draait het: automatisch zodra een bibliotheekscan klaar is (2 minuten
 later, zodat LMS zijn nasleep afmaakt), met een dagelijkse run als vangnet. De

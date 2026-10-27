@@ -143,7 +143,7 @@ while :; do
         && ! ps w | grep -q '[s]ync_ratings\.py'; then
         LAST_RATING_SYNC=$NOW
         RATING_SYNC_DUE=0
-        nohup "$PYTHON_BIN" -u "$RATING_SYNC_SCRIPT" >> "$RATING_SYNC_LOG" 2>&1 < /dev/null &
+        nohup "$PYTHON_BIN" -u "$RATING_SYNC_SCRIPT" --correct >> "$RATING_SYNC_LOG" 2>&1 < /dev/null &
         log_line "Started rating/genre sync (pid $!)."
     fi
 

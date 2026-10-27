@@ -14,9 +14,9 @@ Uitgangspunten
 * Het script onthoudt per nummer welke tag-waarde het de laatste keer zag
   (baseline in `rating_sync.db`). Verandert de POPM-tag in het bestand, dan
   wordt de LMS-rating bijgewerkt; blijft de tag gelijk, dan gebeurt er niets.
-* Bij de eerste kennismaking met een nummer wint de LMS-rating: alleen als er
-  in LMS nog nooit een rating was wordt de tag overgenomen. Zo beschermt de
-  eerste run je bestaande bibliotheek (de tags lopen namelijk niet gelijk).
+* Met `--correct` is de tag leidend: elke LMS-rating die afwijkt van de bekende
+  tag-waarde wordt rechtgezet (ook als het bestand niet is aangeraakt). Zonder
+  die vlag wordt alleen bijgewerkt wat nieuw is of waarvan de tag veranderde.
 * Nooit een rating op 0 zetten; een nummer zonder rating-tag blijft ongemoeid.
 * Schrijven gebeurt via de CLI van de RatingsLight-plugin, zodat LMS zijn
   cache bijwerkt en de historie (lastRated/prevRating) klopt.
@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 import re
 import socket
@@ -102,8 +101,42 @@ def decode_text(body: bytes) -> str:
         return ""
 
 
+# POPM-byte -> LMS-rating (tientallen). Gemeten op deze bibliotheek: de bestanden
+# bevatten zowel de klassieke WMP-waarden (64/128/196/255) als de waarden die
+# MusicBee zelf schrijft voor halve sterren (118/186/242). MusicBee toont 128 als
+# 3 ster, dus een lineaire byte/255-formule is fout. Tussenliggende bytes worden
+# lineair geïnterpoleerd.
+POPM_ANCHORS = [
+    (13, 10),    # 0,5 ster
+    (64, 40),    # 2 ster (WMP)
+    (118, 50),   # 2,5 ster (MusicBee)
+    (128, 60),   # 3 ster (WMP)
+    (186, 70),   # 3,5 ster (MusicBee)
+    (196, 80),   # 4 ster (WMP)
+    (242, 90),   # 4,5 ster (MusicBee)
+    (255, 100),  # 5 ster
+]
+
+
+def popm_to_lms(rating_byte: int) -> int:
+    """POPM-waarde omrekenen naar een LMS-rating (0-100 in stappen van 10)."""
+    if rating_byte <= 0:
+        return 0
+    if rating_byte <= POPM_ANCHORS[0][0]:
+        return POPM_ANCHORS[0][1]
+    if rating_byte >= POPM_ANCHORS[-1][0]:
+        return POPM_ANCHORS[-1][1]
+    for (b1, r1), (b2, r2) in zip(POPM_ANCHORS, POPM_ANCHORS[1:]):
+        if b1 <= rating_byte <= b2:
+            if b2 == b1:
+                return r1
+            value = r1 + (r2 - r1) * (rating_byte - b1) / float(b2 - b1)
+            return int(round(value / 10.0)) * 10
+    return 0
+
+
 def popm_from_frames(frames: dict) -> int | None:
-    """Percentage (0-100) uit de POPM-tag, of None als die er niet is."""
+    """LMS-rating uit de POPM-tag, of None als die er niet is."""
     best = None
     for name in ("POPM", "POP"):
         body = frames.get(name)
@@ -112,15 +145,10 @@ def popm_from_frames(frames: dict) -> int | None:
         nul = body.find(b"\x00")
         if nul < 0 or nul + 1 >= len(body):
             continue
-        email = body[:nul].decode("latin1", "replace")
         rating_byte = body[nul + 1]
         if rating_byte == 0:
             continue
-        value = math.floor(rating_byte * 100 / 255)
-        if "Windows Media Player" in email:
-            value = math.floor(20 + math.floor(rating_byte * 100 / 255) * 80 / 100)
-        value = min(value, 100)
-        value = int((value + 5) / 10) * 10  # LMS werkt met stappen van 10
+        value = popm_to_lms(rating_byte)
         if best is None or value > best:
             best = value
     return best
@@ -210,6 +238,11 @@ def main() -> int:
         action="store_true",
         help="ook bestanden opnieuw inlezen waarvan de mtime niet is gewijzigd",
     )
+    parser.add_argument(
+        "--correct",
+        action="store_true",
+        help="LMS-ratings die afwijken van de bekende tag-waarde meteen rechtzetten",
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -256,6 +289,7 @@ def main() -> int:
         "genre-gecontroleerd": 0,
         "genre-verwijderd": 0,
         "genre-opgeruimd": 0,
+        "gecorrigeerd": 0,
     }
     now = int(time.time())
     pending = {"n": 0}
@@ -283,6 +317,33 @@ def main() -> int:
             (urlmd5, ",".join(sorted(genres)), mtime, now),
         )
         _commit_if_needed()
+
+    # ---- correctie-pass: tag is leidend -------------------------------------
+    # Vergelijkt de laatst bekende tag-waarde met LMS; daarvoor hoeft geen
+    # bestand opnieuw gelezen te worden.
+    if args.correct:
+        track_ids = {row["urlmd5"]: row["id"] for row in tracks}
+        for urlmd5, (popm, _mtime) in baseline.items():
+            if not popm:
+                continue
+            current = known.get(urlmd5, 0)
+            if current == popm:
+                continue
+            track_id = track_ids.get(urlmd5)
+            if track_id is None:
+                continue
+            if args.dry_run:
+                print("  zou corrigeren: track %-6s %s -> %s" % (track_id, current or "-", popm))
+                stats["gecorrigeerd"] += 1
+                continue
+            response = lms_cli("ratingslight setratingpercentnoclient %s %s" % (track_id, popm))
+            if "error" in response.lower():
+                stats["fouten"] += 1
+                print("  fout bij track %s: %s" % (track_id, response))
+                continue
+            stats["gecorrigeerd"] += 1
+            if args.verbose:
+                print("  gecorrigeerd: track %-6s %s -> %s" % (track_id, current or "-", popm))
 
     for row in tracks:
         track_id = row["id"]
@@ -358,17 +419,27 @@ def main() -> int:
             continue
 
         if seen_popm is None:
-            # Eerste kennismaking: alleen invullen als LMS nog niets heeft.
-            if lms_rating > 0:
+            # Eerste kennismaking: nieuwe nummers altijd vullen; bestaande ratings
+            # alleen aanpassen als de tag leidend is (--correct).
+            if lms_rating == target:
+                if not args.dry_run:
+                    remember(urlmd5, target, mtime)
+                continue
+            if lms_rating == 0:
+                action = "nieuw"
+            elif not args.correct:
                 stats["baseline"] += 1
                 if not args.dry_run:
                     remember(urlmd5, target, mtime)
                 elif args.verbose:
                     print("  baseline vastgelegd (LMS blijft %s): %s" % (lms_rating, os.path.basename(file_path)))
                 continue
-            action = "nieuw"
+            else:
+                action = "gecorrigeerd"
         elif target != seen_popm:
             action = "gewijzigd"
+        elif args.correct and target != lms_rating:
+            action = "gecorrigeerd"
         else:
             # Tag gelijk aan vorige keer; alleen mtime bijwerken.
             if not args.dry_run:
@@ -425,6 +496,8 @@ def main() -> int:
         "%d lege genres opgeruimd"
         % (stats["genre-gecontroleerd"], stats["genre-verwijderd"], stats["genre-opgeruimd"])
     )
+    if stats["gecorrigeerd"]:
+        print("correcties: %d LMS-ratings rechtgezet naar de tag-waarde" % stats["gecorrigeerd"])
     return 0 if stats["fouten"] == 0 else 2
 
 
