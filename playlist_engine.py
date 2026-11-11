@@ -1044,6 +1044,29 @@ class SessionManager:
         except RequestError as exc:
             LOGGER.warning("Could not reset the receiver of %s: %s", player_id, exc)
 
+    def _release_mid_track(self, player_id: str) -> None:
+        """Zet een speler die nog midden in een nummer staat netjes uit.
+
+        Alleen `power 0` laat in LMS een half-geopende stream achter. Bij de
+        volgende start opende LMS die oude track dan meteen weer (twee
+        `playlist open`-opdrachten) en sloeg de nieuwe laadopdracht daarna af:
+        de speler bleef op time=0 hangen (2026-10-19 KantoorSpeaker,
+        2026-11-11 Kantoor). Eerst stoppen en de wachtrij leegmaken, dan pas de
+        speler uit, zodat er niets te heropenen valt.
+        """
+        try:
+            self.lms.stop(player_id)
+        except RequestError as exc:
+            LOGGER.warning("Could not stop %s: %s", player_id, exc)
+        try:
+            self.lms.clear_queue(player_id)
+        except RequestError as exc:
+            LOGGER.warning("Could not clear the queue of %s: %s", player_id, exc)
+        try:
+            self.lms.power_off(player_id)
+        except RequestError as exc:
+            LOGGER.warning("Could not power off %s: %s", player_id, exc)
+
     def _recover_stalled_playback(
         self,
         player_id: str,
@@ -1347,10 +1370,9 @@ class SessionManager:
                         "Stop-after-track session for %s is not progressing; powering the player off.",
                         player_id,
                     )
-                    try:
-                        self.lms.power_off(player_id)
-                    except RequestError as exc:
-                        LOGGER.warning("Could not power off %s: %s", player_id, exc)
+                    # De speler stond hier nog in mode=play, dus niet alleen de
+                    # stroom eraf: ook stoppen en de wachtrij leegmaken.
+                    self._release_mid_track(player_id)
                     self.state_store.stop_session(player_id)
                     self._clear_runtime_state(player_id)
                 elif mode in {"pause", "stop"}:
@@ -1600,6 +1622,23 @@ class SessionManager:
             raise RequestError(f"Playlist {playlist_name} returned no tracks after filtering.", HTTPStatus.CONFLICT)
 
         gekozen_op = time.time()
+        if queue_ids:
+            # Een speler die nog een wachtrij van een vorige sessie heeft, laat
+            # LMS bij het aanzetten de eerste track al openen. Komt de
+            # playtracks-opdracht daar direct achteraan, dan breekt LMS die
+            # voorbeluistering af en blijft de speler op time=0 hangen
+            # (2026-10-19 KantoorSpeaker, 2026-11-11 Kantoor). De engine bouwt de
+            # wachtrij hieronder toch helemaal opnieuw op, dus eerst opruimen.
+            LOGGER.info(
+                "Clearing the leftover queue on %s (%s tracks) before starting %s.",
+                resolved_player_id,
+                len(queue_ids),
+                playlist_name,
+            )
+            try:
+                self.lms.clear_queue(resolved_player_id)
+            except RequestError as exc:
+                LOGGER.warning("Could not clear the queue of %s: %s", resolved_player_id, exc)
         self.lms.power_on(resolved_player_id)
 
         idle_reset_after = self.config.receiver_reset_after_idle_seconds
