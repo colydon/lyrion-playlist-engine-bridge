@@ -464,11 +464,29 @@ Instellingen in /usr/local/slimserver/prefs/castbridge.xml (bijgewerkt 11-11-202
   Let op: een nieuw toegevoegde speaker erft de <common>-instellingen (flc/48k).
   Stopt een nieuw apparaat na een paar seconden? Zet hem dan ook op mp3 + 96000.
 
+- Kantoor -> sinds 11-11-2026 <mode>mp3</mode> (zelfde profiel als de JBL, geen
+  <sample_rate>). Daarvoor erfde hij flc uit <common>: de bridge converteerde
+  dan elke mp3 naar flac en serveerde die als
+  http://192.168.0.54:<poort>/bridge-N.flac aan de speaker. Met mp3 geeft de
+  bridge het bestand 1-op-1 door (bridge-N.mp3) en zakt het CPU-gebruik van de
+  bridge van ~6% naar ~1%. Let op: die conversie zit IN de bridge, er draait
+  geen flac/sox-proces van LMS - "geen transcoder in ps" betekent dus niet dat
+  er niets omgerekend wordt. Controleer met:
+    grep -a "bridge-[0-9]*\.[a-z0-9]*" /var/log/slimserver/castbridge.log
+
 - Woonkamer, Slaapkamer, Keuken, TV, TV Slaapkamer -> <mode>flc</mode> +
   <sample_rate>48000</sample_rate> (als default in het <common>-blok).
   Flac draagt wel een lengte mee, dus het scherm toont de voortgangsbalk, de
   eindtijd en de vorige/volgende-knoppen. 48000 in plaats van de oude 96000
   halveert het verkeer.
+
+- Bridge-log aanzetten (handig bij "speler stopt zonder opdracht"):
+    prefs/plugin/castbridge.prefs -> logging: 1
+    castbridge.xml -> <cast_log>debug</cast_log> (en eventueel slimproto_log)
+  De bridge start dan met -f /var/log/slimserver/castbridge.log (~2 MB per uur
+  op tmpfs). Daarin staan de CASTV2-berichten: MEDIA_STATUS IDLE/PAUSED van het
+  apparaat zelf, en http-fouten op de LMS-stroom. Daarna weer logging: 0 en de
+  logniveaus op info zetten (vereist een LMS-herstart).
 
 Regel: zet nooit een <sample_rate> die LAGER is dan de bron. Bij 44,1 kHz- en
 48 kHz-bestanden met een lagere doelwaarde moet LMS omrekenen, en dat kan zonder
