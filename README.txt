@@ -391,6 +391,18 @@ cooldowns, uitzonderingen (kerst, sinterklaas, fout) en het onderhoud.
 Meten wat er echt uit komt:
     python3 tools/rating_mix_report.py --samples 20
 
+GENRE-REM IN DE AVONDMIX
+Spaans en Nederlandstalig zijn twee grote groepen met veel oudere klassiekers.
+AvondMix (en dus ook DagAvondMix na 18:00) remt die groepen zacht af: hoe meer
+nummers er in de laatste 60 minuten uit zo'n groep langskwamen, hoe lager het
+gewicht van alle nummers uit die groep. Niets wordt geforceerd en niets wordt
+hard uitgesloten: speelde er niets uit de groep, dan is het gewicht normaal en
+komt er dus gewoon weer eens een klassieker voorbij. DagMix en de themaplaylists
+blijven ongewijzigd. Zie WAARDERING_POOLS.md paragraaf 11.
+
+Bursts droogtesten zonder de Pi (simulatie met de verhoudingen uit de docs):
+    python3 tools/sim_mix.py --sql AvondMix.sql --picks 300
+
 LOUNGE ALLEEN IN SUMMERMIX
 Het genre Lounge staat in alle mixen uit (DagMix, AvondMix, PartyMix en de
 themaplaylists). SummerMix heeft er een eigen categorie van 15%: regelmatig

@@ -130,6 +130,7 @@ lijst: de playlist valt nooit stil.
 - **Tempo**: DagMix en SummerMix sluiten _Very Fast_ uit; in de avond vallen ook
   _Fast_ en nummers zonder TEMPO-tag met een hoge BPM af (AvondMix, SummerMix)
   of krijgen ze een laag gewicht (PartyMix, SummerMix).
+- **Genre-rem** in AvondMix (Spaans en Nederlandstalig): zie paragraaf 11.
 - **Party** valt buiten AvondMix.
 - **Onder 2 ster** doet niet mee, met Sinterklaas als enige uitzondering.
 
@@ -179,6 +180,9 @@ wat de engine doet):
 - Categorie-doelen: het `case ... as target_share`-blok (DagMix, AvondMix,
   SummerMix) of `category_targets` (PartyMix).
 - Seizoenspercentages: de `settings`-CTE bovenaan.
+- Genre-rem (AvondMix): `genre_window_seconds`, `spaans_guard` en
+  `nederlandstalig_guard` in de `settings`-CTE; de tellers in
+  `recent_genre_pressure`; de toepassing in `weighted` (`guarded_weight`).
 
 **Als je ratings gaat veranderen** (bijvoorbeeld de 3,5-sterrenpool verkleinen
 naar ~500 en de rest naar 3,0 ster): je hoeft niets aan de SQL te doen. De
@@ -222,3 +226,69 @@ De categorie-laag (hits 35% in DagMix) houdt de hits ook als **groep** op peil,
 hoe hard de 2,5- en 3,0-sterrenpools ook groeien. Binnen die categorie doet het
 gewicht het werk. Zo blijft de mix hetzelfde karakter houden zonder dat een
 groeiende pool de rest wegdrukt.
+
+## 11. Genre-rem (AvondMix, sinds 11-11-2026)
+
+**Het probleem.** De rating regelt hoe vaak een _nummer_ langskomt, maar niet
+hoe vaak een hele _groep_ achter elkaar langskomt. In de avondmix zijn twee
+grote groepen sterk vertegenwoordigd: Spaans (vooral 3,0*/2,5*) en
+Nederlandstalig (van recente hits tot André Hazes). Omdat de trekking per
+nummer onafhankelijk is, ontstaan daar vanzelf reeksen: vijf Spaanse nummers
+achter elkaar, of een uur lang alleen maar Hollandse klassiekers.
+
+**De oplossing: een zachte, zelfherstellende rem per groep.** De SQL telt
+hoeveel nummers uit de groep in de laatste **60 minuten** daadwerkelijk
+gespeeld zijn (`tracks_persistent.lastPlayed`) en deelt het gewicht van alle
+nummers uit die groep daarop:
+
+```
+gewicht_na_rem = gewicht / (1 + sterkte * aantal_recent)
+```
+
+- 0 recent → gewicht ongewijzigd (dus een klassieker mag gewoon voorbij komen).
+- 1 recent → de hele groep op de helft (Nederlandstalig: ×0,59).
+- 3 recent → de hele groep op een kwart (Nederlandstalig: ×0,32).
+
+De rem dooft vanzelf: 60 minuten zonder nummers uit de groep en het gewicht is
+weer normaal. Er wordt niets geforceerd en niets hard uitgesloten — ook niet als
+de rest van de bibliotheek even op is. De ratingverhoudingen _binnen_ de groep
+blijven ongewijzigd, dus een recente Nederlandstalige hit komt nog steeds vaker
+dan een oude.
+
+**Waarom tellen en niet een vast quotum?** Een vast quotum zou de groep ook
+tegenwerken als er net niets van langs kwam, en zou moeten meebewegen met
+hoeveel nummers er in de bibliotheek zitten. De telling is zelfregelend: de
+gemiddelde kans van een groep stabiliseert op het punt waar de rem precies
+compenseert wat de groep aan aandeel inneemt.
+
+**Instellingen** (in de `settings`-CTE van `AvondMix.sql`):
+
+| Instelling               | Waarde | Betekenis                                                     |
+| ------------------------ | ------ | ------------------------------------------------------------- |
+| `genre_window_seconds`   | 3600   | terugkijkvenster; langer = rustiger, korter = sneller reageren |
+| `spaans_guard`           | 1,00   | sterkte van de rem voor de groep Spaans                       |
+| `nederlandstalig_guard`  | 0,70   | sterkte van de rem voor de groep Nederlandstalig              |
+
+Een nummer dat beide genres heeft, krijgt beide remmen (deler × deler).
+
+**Gemeten effect** (simulatie met de verhoudingen uit dit document,
+`tools/sim_mix.py`, 3 × 300 trekkingen van ~3,5 minuut):
+
+|                       | zonder rem | met rem |
+| --------------------- | ---------- | ------- |
+| aandeel Spaans        | 8,6%       | 6,2%    |
+| aandeel Nederlandstalig | 26,6%    | 13,8%   |
+| samen                 | 32,7%      | 19,1%   |
+| langste reeks         | 4–5        | 3       |
+| reeksen van 4+        | 3,0        | 0,3     |
+| reeksen van 5+        | 0,7        | 0       |
+
+De poolverdeling verandert niet (2,5* blijft ~35% van de avond). De rem
+verschuift dus niet het karakter van de avondmix, alleen de volgorde: dezelfde
+hoeveelheid oldies, maar minder aaneengesloten klassiekers.
+
+**Wat de rem niet doet.** Hij geldt alleen in `AvondMix` (en daarmee in
+`DagAvondMix` na 18:00). `DagMix` is ongemoeid: daar domineren de hits, is het
+aandeel 2,5* klein en kwam het probleem niet voor. De themaplaylists (zoals
+`SpaansMix` en `NederlandstaligMix`) hebben geen rem — daar is het thema juist
+de bedoeling.

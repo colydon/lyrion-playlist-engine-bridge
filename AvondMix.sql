@@ -35,6 +35,18 @@
 -- - avoid TEMPO Fast and Very Fast when the TEMPO tag is present
 -- - use BPM as a fallback tempo hint when TEMPO is missing
 -- - prefer Slow and lower BPM tracks in the evening
+--
+-- Genre-diversiteit (rem op Spaans en Nederlandstalig):
+-- De rating bepaalt hoe vaak een nummer langskomt, maar zegt niets over hoe
+-- vaak een hele groep achter elkaar mag komen. Spaans en Nederlandstalig zijn
+-- twee grote groepen met veel oudere klassiekers; zonder rem kan daar zomaar
+-- een reeks van vijf uit komen. Daarom een zachte, zelfherstellende rem:
+-- hoe meer nummers uit die groep er in het laatste uur langskwamen, hoe lager
+-- het gewicht van alle nummers uit die groep. Speelde er niets uit de groep,
+-- dan is het gewicht normaal en kan er dus ook gewoon een klassieker
+-- voorbijkomen. Niets wordt geforceerd en niets wordt hard uitgesloten.
+-- De tellers staan in 'recent_genre_pressure', de vensterduur en de sterkte
+-- per groep in 'settings'. Zie WAARDERING_POOLS.md, paragraaf 11.
 
 with
 settings as (
@@ -50,7 +62,13 @@ settings as (
             when strftime('%m-%d', 'now', 'localtime') between '12-10' and '12-19' then 0.65
             when strftime('%m-%d', 'now', 'localtime') between '12-20' and '12-26' then 1.00
             else 0.00
-        end as christmas_share
+        end as christmas_share,
+        -- Genre-rem: hoe ver terugkijken, en hoe zwaar de rem per groep weegt.
+        -- Een langere periode = rustiger correctie; een hogere sterkte = de
+        -- groep zakt sneller weg na een paar nummers.
+        3600 as genre_window_seconds,
+        1.00 as spaans_guard,
+        0.70 as nederlandstalig_guard
 ),
 genre_flags as (
     select
@@ -62,6 +80,8 @@ genre_flags as (
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',oldies,') > 0 then 1 else 0 end) as is_oldies,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',party,') > 0 then 1 else 0 end) as is_party,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',fout,') > 0 then 1 else 0 end) as is_fout,
+        max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',spaans,') > 0 then 1 else 0 end) as is_spaans,
+        max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',nederlandstalig,') > 0 then 1 else 0 end) as is_nederlandstalig,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',live,') > 0 then 1 else 0 end) as is_live,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',karaoke,') > 0 then 1 else 0 end) as is_karaoke,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',kinderliedjes,') > 0 then 1 else 0 end) as is_kinderliedjes,
@@ -73,6 +93,25 @@ genre_flags as (
     from genre_track gt
     join genres g on g.id = gt.genre
     group by gt.track
+),
+-- Hoeveel nummers uit de twee grote groepen speelden er recent? Alleen
+-- daadwerkelijk gespeelde nummers tellen (tracks_persistent.lastPlayed),
+-- dus de rem reageert op wat er echt langskwam, niet op wat er in de
+-- wachtrij staat. Dit levert per groep een deler op waar het gewicht door
+-- gedeeld wordt: 1.0 = niets recent, hoger = er speelden er al een paar.
+-- Zie guarded_weight in 'weighted'.
+recent_genre_pressure as (
+    select
+        1.0 + s.spaans_guard * coalesce(sum(case when gf.is_spaans = 1 then 1 else 0 end), 0) as spaans_divisor,
+        1.0 + s.nederlandstalig_guard * coalesce(sum(case when gf.is_nederlandstalig = 1 then 1 else 0 end), 0) as nederlandstalig_divisor
+    from tracks t
+    join tracks_persistent tp on tp.urlmd5 = t.urlmd5
+    join genre_flags gf on gf.track = t.id
+    cross join settings s
+    where
+        t.audio = 1
+        and tp.lastPlayed is not null
+        and tp.lastPlayed >= cast(strftime('%s', 'now') as integer) - s.genre_window_seconds
 ),
 tempo_flags as (
     select
@@ -114,6 +153,8 @@ base_eligible as (
             else 0
         end as is_sinterklaas,
         coalesce(gf.is_christmas, 0) as is_christmas,
+        coalesce(gf.is_spaans, 0) as is_spaans,
+        coalesce(gf.is_nederlandstalig, 0) as is_nederlandstalig,
         case
             when coalesce(gf.is_sinterklaas, 0) = 1 and s.sinterklaas_share > 0 then 'Sinterklaas'
             when coalesce(gf.is_christmas, 0) = 1 and s.christmas_share > 0 then 'Christmas'
@@ -271,10 +312,22 @@ weighted as (
             when e.category = 'Oldies' then 0.180
             else                            0.760
         end as category_share,
-        ct.total_selection_weight
+        ct.total_selection_weight,
+        -- Zachte rem per groep: het gewicht van een nummer uit een groep die
+        -- net al langs kwam gaat omlaag, zonder dat de groep ooit op nul staat.
+        -- De ratingverhoudingen binnen de groep blijven ongewijzigd, dus een
+        -- recente Nederlandstalige hit komt nog steeds vaker dan een oude.
+        e.selection_weight / case
+            when e.is_spaans = 1 and e.is_nederlandstalig = 1
+                then rgp.spaans_divisor * rgp.nederlandstalig_divisor
+            when e.is_spaans = 1 then rgp.spaans_divisor
+            when e.is_nederlandstalig = 1 then rgp.nederlandstalig_divisor
+            else 1.0
+        end as guarded_weight
     from eligible_pool e
     join category_targets ct on ct.category = e.category
     cross join share_context sc
+    cross join recent_genre_pressure rgp
 ),
 scored as (
     select
@@ -282,7 +335,7 @@ scored as (
         primary_artist,
         (
             (((random() & 9223372036854775807) + 1.0) / 9223372036854775808.0)
-            / nullif(category_share * selection_weight / nullif(total_selection_weight, 0), 0)
+            / nullif(category_share * guarded_weight / nullif(total_selection_weight, 0), 0)
         ) as selection_score
     from weighted
     where category_share > 0
