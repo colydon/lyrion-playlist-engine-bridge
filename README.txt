@@ -417,7 +417,7 @@ Deze Pi heeft geen mp3-encoder en geen mp3-decoder: LMS heeft alleen de eigen
 binaries sox, flac, faad, mac en wvunpack. De muziekbibliotheek is volledig mp3
 (5200+ bestanden), waarvan een groot deel 48 kHz is.
 
-Instellingen in /usr/local/slimserver/prefs/castbridge.xml (14-10-2026):
+Instellingen in /usr/local/slimserver/prefs/castbridge.xml (bijgewerkt 11-11-2026):
 
 - Beneden, Hele Huis, WoonkamerCombo -> <mode>mp3</mode> + <sample_rate>96000</sample_rate>
   Deze spelers hebben last van de flac-stroom: Kantoor gaf http-fouten en de
@@ -428,14 +428,32 @@ Instellingen in /usr/local/slimserver/prefs/castbridge.xml (14-10-2026):
   <send_coverart>1</send_coverart>, zodat de Nest Hub in de groep titel, artiest
   en hoesje toont. Omdat een mp3-stroom geen lengte meedraagt, blijft de
   voortgangsbalk/afstandsbediening daar wel achterwege.
-- WoonkamerCombo heeft ook <stop_receiver>0</stop_receiver>. Zonder dat stopt de
-  bridge bij elke sprong in een nummer de Cast-receiver en start hem daarna
-  opnieuw; de Nest Hub laat dan steeds zijn "verbonden"-geluidje horen. Met 0
-  blijft de sessie leven: een seek hervat in ~1,5-3 s in plaats van ~6 s. Staat
-  alleen in het device-blok van de groep; de losse speakers houden de
-  <common>-waarde (1). Let op: dit is geen instelling die de plugin-UI kent, dus
-  na het opslaan van de CastBridge-instellingen in LMS kan hij verdwijnen -
-  controleer dan castbridge.xml.
+- ALLE speakers hebben sinds 11-11-2026 <stop_receiver>0</stop_receiver> in hun
+  device-blok (Kantoor, KantoorSpeaker, Keuken, Woonkamer, Slaapkamer, Beneden,
+  Hele Huis, WoonkamerCombo). Alleen de TV's houden de <common>-waarde (1).
+  Zonder dat stopt de bridge bij elke sprong in een nummer de Cast-receiver en
+  start hem daarna opnieuw; het apparaat laat dan zijn "verbonden"-geluidje
+  horen en een seek duurt ~6 s. Met 0 blijft de sessie leven: een seek hervat in
+  ~1,5-3 s en zonder geluidje. Aanleiding: een seek naar het eind van een nummer
+  bleef op Kantoor 45 s op dezelfde tijd staan (de engine zette de speler
+  daarna uit); met 0 loopt de tijd door en gaat het nummer gewoon over in de
+  volgende.
+  Let op: dit is geen instelling die de plugin-UI kent, dus na het opslaan van
+  de CastBridge-instellingen in LMS kan hij verdwijnen - controleer dan
+  castbridge.xml.
+
+  Bewerken (de bridge herschrijft het bestand bij elke netwerkscan, dus NOOIT
+  met een draaiende bridge):
+    1. sudo /usr/local/etc/init.d/slimserver stop     (bridge-proces moet weg zijn)
+    2. line-based editen, daarna valideren:
+       python3.11 -c "import xml.etree.ElementTree as ET; ET.parse('<pad>/castbridge.xml')"
+    3. sudo /usr/local/etc/init.d/slimserver start > /dev/null 2>&1 < /dev/null
+       (ALLE fds redirecten: start je LMS vanuit een SSH-sessie zonder
+       redirectie, dan hangt de daemon aan je pty en sterft hij zodra de
+       sessie sluit)
+    4. controleer dat de macs gelijk zijn gebleven en dat de sleutel er na een
+       minuut nog staat (autosave):
+       grep -c "<stop_receiver>0</stop_receiver>" castbridge.xml
 - KantoorSpeaker (JBL) -> <mode>mp3</mode>, zonder <sample_rate> (erft 48000), plus
   <send_metadata>0</send_metadata> en <send_coverart>0</send_coverart>.
   De JBL heeft geen scherm; metadata en hoesjes kosten hem bij elke trackwissel
@@ -466,7 +484,8 @@ Controle:
     # moet 0 blijven
 
 Bij twijfel de config terugzetten kan met:
-    /usr/local/slimserver/prefs/castbridge.xml.bak-20261011-rate
+    /usr/local/slimserver/prefs/castbridge.xml.bak-20261011-rate     (voor de mp3/flac-keuzes)
+    /usr/local/slimserver/prefs/castbridge.xml.bak-20261111-seekfix  (voor stop_receiver)
 
 
 STOPPEN NA HET HUIDIGE NUMMER (via de API / Homey)
