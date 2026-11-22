@@ -45,6 +45,28 @@ SINTERKLAAS SCHEDULE (local LMS time)
 On Dec 5 the Sinterklaas tracks are also allowed without a rating, because all
 19 of them are unrated and would otherwise never be selected at all.
 
+NIEUWJAAR (genre NewYear, local LMS time)
+- 1 januari: eigen pool in DagMix (8%) en AvondMix (10%), dus ongeveer 1
+  Nieuwjaarsnummer per uur
+- alle andere dagen: 0%
+- een nummer dat naast NewYear ook Kerst heeft, volgt gewoon de kerstregels en
+  wordt dus nooit tegengehouden; alleen een nummer met ALLEEN NewYear wordt
+  buiten 1 januari geweerd
+- van de Nieuwjaarsnummers mag er per selectie maar eentje mee: degene die het
+  langst geleden speelde. Twee nummers wisselen elkaar zo af in plaats van
+  achter elkaar te komen; komt er een nummer bij, dan rolt de rotatie daar
+  automatisch in mee
+- tussen twee Nieuwjaarsnummers zit altijd minstens een half uur
+  (`newyear_gap_seconds`); in de praktijk komt er ongeveer 1 per uur langs
+  (gemeten over 24 uur: gemiddeld 61 minuten, altijd afwisselend)
+- de engine zet daarnaast hooguit 1 Nieuwjaarsnummer tegelijk in de wachtrij
+  (`genre_rules` in playlist_engine_config.json). Zonder die regel speelt een
+  genre met twee nummers elk nummer maar één keer per sessie, ook al staat er
+  in de SQL een uurlijkse rotatie
+- de themaplaylists (Hits, Oldies, 80s...20s, Spaans, Nederlandstalig, Love,
+  Party, Kerst, LUCARIX, Summer) weren NewYear-only nummers ook buiten
+  1 januari, maar hebben geen eigen Nieuwjaarspool
+
 NORMAL MIX TARGET
 - Hits: 35%
 - Other: 65%

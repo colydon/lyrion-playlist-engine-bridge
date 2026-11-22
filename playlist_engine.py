@@ -44,6 +44,11 @@ def flatten_sql(sql_text: str) -> str:
     return flattened[:-1] if flattened.endswith(";") else flattened
 
 
+def normalise_genre(value: str) -> str:
+    """Genre-naam zoals de playlist-SQL hem vergelijkt: lowercase, geen spaties."""
+    return "".join(str(value or "").split()).lower()
+
+
 def json_response(handler: BaseHTTPRequestHandler, status: int, payload: Dict[str, Any]) -> None:
     raw = json.dumps(payload, ensure_ascii=True).encode("utf-8")
     handler.send_response(status)
@@ -168,6 +173,10 @@ class EngineConfig:
     skip_rules: List[Dict[str, Any]]
     playlists: Dict[str, PlaylistDefinition]
     rooms: Dict[str, RoomDefinition] = field(default_factory=dict)
+    # Per genre (lowercase, zonder spaties) een regel voor de selectie, zie
+    # _parse_genre_rules. Wordt gebruikt voor genres die binnen een sessie
+    # opnieuw langs mogen komen, zoals Nieuwjaar (max 1 per uur).
+    genre_rules: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     @classmethod
     def load(cls, config_path: Path) -> "EngineConfig":
@@ -281,6 +290,7 @@ class EngineConfig:
             skip_rules=list(raw.get("skip_rules", [])),
             playlists=playlist_catalog,
             rooms=rooms,
+            genre_rules=cls._parse_genre_rules(raw.get("genre_rules", {})),
         )
 
     def room_definition(self, name: str) -> Optional[RoomDefinition]:
@@ -339,6 +349,41 @@ class EngineConfig:
             return max(0, int(value))
         except (TypeError, ValueError):
             return None
+
+    @classmethod
+    def _parse_genre_rules(cls, raw_rules: Any) -> Dict[str, Dict[str, Any]]:
+        """Leest het `genre_rules`-blok.
+
+        Voorbeeld:
+            "genre_rules": {
+                "NewYear": {"exempt_from_history": true, "max_in_queue": 1}
+            }
+
+        - exempt_from_history (default true): het nummer mag binnen dezelfde
+          sessie opnieuw gekozen worden. Zonder dit speelt een klein genre als
+          NewYear elk nummer maar één keer per sessie, ook al staat er in de
+          SQL een uurlijkse rotatie.
+        - max_in_queue (default 0 = onbeperkt): hoeveel nummers met dit genre
+          er tegelijk in de wachtrij mogen staan. Zo komen twee Nieuwjaars-
+          nummers nooit achter elkaar.
+        """
+        rules: Dict[str, Dict[str, Any]] = {}
+        if not isinstance(raw_rules, dict):
+            return rules
+
+        for genre_name, raw_rule in raw_rules.items():
+            key = normalise_genre(str(genre_name))
+            if not key:
+                continue
+            if isinstance(raw_rule, dict):
+                exempt = bool(raw_rule.get("exempt_from_history", True))
+                max_in_queue = cls._parse_optional_int(raw_rule.get("max_in_queue")) or 0
+            else:
+                # Korte vorm: alleen een boolean of een getal.
+                exempt = bool(raw_rule) if isinstance(raw_rule, bool) else True
+                max_in_queue = 0 if isinstance(raw_rule, bool) else (cls._parse_optional_int(raw_rule) or 0)
+            rules[key] = {"exempt_from_history": exempt, "max_in_queue": max_in_queue}
+        return rules
 
     @staticmethod
     def _parse_clock_minutes(value: str) -> int:
@@ -909,6 +954,24 @@ class TrackSelector:
         wanted = genre_name.strip().lower()
         return bool(wanted) and any(wanted == genre.lower() for genre in track.get("genres", []))
 
+    def _genre_rule(self, track: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """De `genre_rules`-regel die op dit nummer van toepassing is, of None."""
+        if not self.config.genre_rules:
+            return None
+        for genre in track.get("genres", []):
+            rule = self.config.genre_rules.get(normalise_genre(genre))
+            if rule is not None:
+                return rule
+        return None
+
+    @staticmethod
+    def _track_genre_keys(track: Dict[str, Any]) -> List[str]:
+        return [normalise_genre(genre) for genre in track.get("genres", [])]
+
+    def _may_repeat_in_session(self, track: Dict[str, Any]) -> bool:
+        rule = self._genre_rule(track)
+        return bool(rule and rule.get("exempt_from_history", True))
+
     @staticmethod
     def _artist_ids(track: Dict[str, Any]) -> set:
         return {int(artist_id) for artist_id in track.get("artist_ids", []) if str(artist_id).isdigit()}
@@ -971,10 +1034,12 @@ class TrackSelector:
             metadata = self._fetch_metadata(connection, track_ids)
 
             for track_id in track_ids:
-                if track_id in history_ids or track_id in current_ids:
+                if track_id in current_ids:
                     continue
                 track = metadata.get(track_id)
                 if not track:
+                    continue
+                if track_id in history_ids and not self._may_repeat_in_session(track):
                     continue
                 if not self._passes_skip_rules(track):
                     continue
@@ -997,6 +1062,15 @@ class TrackSelector:
         if artist_window is None:
             artist_window = self.config.artist_repeat_window_tracks
 
+        # Genres met een maximum in de wachtrij (bijv. NewYear: 1). Zo komen
+        # twee Nieuwjaarsnummers nooit achter elkaar, ook niet als de SQL ze
+        # in dezelfde batch aanlevert.
+        genre_limits = {
+            key: int(rule.get("max_in_queue", 0) or 0)
+            for key, rule in self.config.genre_rules.items()
+            if int(rule.get("max_in_queue", 0) or 0) > 0
+        }
+
         selected: List[Dict[str, Any]] = []
         exhausted_once = False
 
@@ -1005,6 +1079,14 @@ class TrackSelector:
             recent_history_metadata = self._fetch_metadata(connection, recent_history_ids)
             recent_tracks_seed = [recent_history_metadata[track_id] for track_id in recent_history_ids if track_id in recent_history_metadata]
             recent_tracks_seed.extend(self._recent_queue_tracks(connection, current_queue_ids, artist_window))
+
+            genre_in_queue: Dict[str, int] = {}
+            if genre_limits:
+                queue_metadata = self._fetch_metadata(connection, list(current_ids))
+                for queue_track in queue_metadata.values():
+                    for genre_key in self._track_genre_keys(queue_track):
+                        if genre_key in genre_limits:
+                            genre_in_queue[genre_key] = genre_in_queue.get(genre_key, 0) + 1
 
             for allow_artist_repeats in [False]:
                 attempts = 0
@@ -1034,31 +1116,49 @@ class TrackSelector:
                     metadata = self._fetch_metadata(connection, track_ids)
                     selected_before_attempt = len(selected)
                     artist_blocked_count = 0
+                    genre_blocked_count = 0
                     for track_id in track_ids:
                         if len(selected) >= desired_count:
                             break
-                        if track_id in history_ids or track_id in current_ids:
+                        if track_id in current_ids:
                             continue
                         track = metadata.get(track_id)
                         if not track:
+                            continue
+                        # NewYear-achtige genres mogen binnen dezelfde sessie
+                        # terugkomen; zonder dat speelt een genre met twee
+                        # nummers elk nummer maar één keer per sessie.
+                        may_repeat = self._may_repeat_in_session(track)
+                        if track_id in history_ids and not may_repeat:
                             continue
                         if not self._passes_skip_rules(track):
                             continue
                         if not self._passes_playlist_tempo_rules(resolved_playlist_id, track):
                             continue
-                        if not allow_artist_repeats and self._shares_recent_artist(track, recent_tracks, artist_window):
+                        if any(
+                            genre_limits.get(genre_key, 0)
+                            and genre_in_queue.get(genre_key, 0) >= genre_limits[genre_key]
+                            for genre_key in self._track_genre_keys(track)
+                        ):
+                            genre_blocked_count += 1
+                            continue
+                        if not allow_artist_repeats and not may_repeat and self._shares_recent_artist(track, recent_tracks, artist_window):
                             artist_blocked_count += 1
                             continue
                         selected.append(track)
                         recent_tracks.append(track)
                         history_ids.add(track_id)
                         current_ids.add(track_id)
+                        for genre_key in self._track_genre_keys(track):
+                            if genre_key in genre_limits:
+                                genre_in_queue[genre_key] = genre_in_queue.get(genre_key, 0) + 1
 
                     if (
                         len(selected) == selected_before_attempt
                         and history_ids
                         and self.config.history_reset_on_exhaustion
                         and artist_blocked_count == 0
+                        and genre_blocked_count == 0
                         and not exhausted_once
                     ):
                         LOGGER.info(

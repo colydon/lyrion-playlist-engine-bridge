@@ -99,6 +99,7 @@ draaibeurten van hetzelfde nummer. Hij begrenst herhaling en houdt de mix fris.
 | oldies (genre) | 14 dagen (DagMix) / 24 uur (AvondMix) | zie hierboven                                                  |
 | kerst          | volgt de pool                         | 5-sterren-kerst mag in december vaak terug                     |
 | sinterklaas    | 24 uur                                | alleen op 5 december                                           |
+| newyear        | minimaal 30 minuten                   | alleen op 1 januari, om de beurt (~1 per uur)                  |
 
 Als een pool door de cooldown leegraakt, pakt de query automatisch de volledige
 lijst: de playlist valt nooit stil.
@@ -131,6 +132,15 @@ lijst: de playlist valt nooit stil.
   _Fast_ en nummers zonder TEMPO-tag met een hoge BPM af (AvondMix, SummerMix)
   of krijgen ze een laag gewicht (PartyMix, SummerMix).
 - **Genre-rem** in AvondMix (Spaans en Nederlandstalig): zie paragraaf 11.
+- **NewYear** is een eigen pool op 1 januari (10% in DagMix en AvondMix).
+  Buiten die dag speelt een nummer met alleen dat genre niet mee; heeft het
+  nummer ook Kerst, dan volgt het gewoon de kerstregels en wordt het nooit
+  geweerd. Binnen de pool is er maar één kandidaat per selectie: het nummer dat
+  het langst niet speelde. Zo wisselen twee Nieuwjaarsnummers elkaar af en zit
+  er altijd minstens een half uur tussen twee Nieuwjaarsnummers
+  (`newyear_gap_seconds`). Gemeten over 24 uur komt dat neer op gemiddeld één
+  per ~60 minuten. De engine houdt daarnaast hooguit één Nieuwjaarsnummer
+  tegelijk in de wachtrij (`genre_rules`).
 - **Party** valt buiten AvondMix.
 - **Onder 2 ster** doet niet mee, met Sinterklaas als enige uitzondering.
 

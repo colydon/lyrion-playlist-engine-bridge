@@ -77,6 +77,7 @@ genre_flags as (
         gt.track,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',kerst,') > 0 then 1 else 0 end) as is_christmas,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',sinterklaas,') > 0 then 1 else 0 end) as is_sinterklaas,
+        max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',newyear,') > 0 then 1 else 0 end) as is_newyear,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',hits,') > 0 then 1 else 0 end) as is_hit,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',oldies,') > 0 then 1 else 0 end) as is_oldies,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',fout,') > 0 then 1 else 0 end) as is_fout,
@@ -226,12 +227,23 @@ base_eligible as (
         and (
             s.christmas_share > 0
             or coalesce(gf.is_christmas, 0) = 0
+            -- Een nummer met Kerst en NewYear erop mag op nieuwjaarsdag mee.
+            or (coalesce(gf.is_newyear, 0) = 1 and strftime('%m-%d', 'now', 'localtime') = '01-01')
         )
 
         -- Sinterklaas is alleen op 5 december beschikbaar.
         and (
             s.sinterklaas_share > 0
             or coalesce(gf.is_sinterklaas, 0) = 0
+        )
+
+        -- Nieuwjaarsmuziek (genre NewYear) alleen op 1 januari. Heeft een
+        -- nummer daarnaast ook Kerst, dan volgt het de kerstregels en wordt
+        -- het dus niet geweerd.
+        and (
+            coalesce(gf.is_newyear, 0) = 0
+            or coalesce(gf.is_christmas, 0) = 1
+            or strftime('%m-%d', 'now', 'localtime') = '01-01'
         )
 ),
 eligible as (

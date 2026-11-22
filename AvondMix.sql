@@ -18,6 +18,16 @@
 -- Dec 20-26 : 100% Christmas
 -- Dec 27-Nov 30: 0% Christmas
 --
+-- New Year schedule (local LMS time, genre NewYear):
+-- Jan 1     : 10% own pool -> roughly one New Year song per hour
+-- other days: 0%
+-- A track tagged both NewYear and Kerst follows the Christmas rules above and
+-- is never blocked by the New Year rule. Of the New Year tracks only the one
+-- that played longest ago is eligible, so they alternate instead of landing in
+-- the same batch; between two New Year songs there is always at least 30
+-- minutes (newyear_gap_seconds). The engine keeps at most one New Year song in
+-- the queue (see genre_rules in the playlist engine config).
+--
 -- Normal mix target:
 -- Hits 6.0%, Oldies 18.0%, Other 76.0%
 --
@@ -63,6 +73,15 @@ settings as (
             when strftime('%m-%d', 'now', 'localtime') between '12-20' and '12-26' then 1.00
             else 0.00
         end as christmas_share,
+        -- Nieuwjaar: alleen op 1 januari, als eigen pool. In de avond zijn de
+        -- nummers langer, dus 10% is hier ongeveer 1 nummer per uur.
+        -- newyear_gap_seconds is de harde minimumafstand tussen twee
+        -- Nieuwjaarsnummers.
+        case
+            when strftime('%m-%d', 'now', 'localtime') = '01-01' then 0.10
+            else 0.00
+        end as newyear_share,
+        1800 as newyear_gap_seconds,
         -- Genre-rem: hoe ver terugkijken, en hoe zwaar de rem per groep weegt.
         -- Een langere periode = rustiger correctie; een hogere sterkte = de
         -- groep zakt sneller weg na een paar nummers.
@@ -75,6 +94,7 @@ genre_flags as (
         gt.track,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',kerst,') > 0 then 1 else 0 end) as is_christmas,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',sinterklaas,') > 0 then 1 else 0 end) as is_sinterklaas,
+        max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',newyear,') > 0 then 1 else 0 end) as is_newyear,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',lounge,') > 0 then 1 else 0 end) as is_lounge,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',hits,') > 0 then 1 else 0 end) as is_hit,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',oldies,') > 0 then 1 else 0 end) as is_oldies,
@@ -93,6 +113,21 @@ genre_flags as (
     from genre_track gt
     join genres g on g.id = gt.genre
     group by gt.track
+),
+-- Nieuwjaarsrotatie. Van alle nummers met het genre NewYear mag er per
+-- selectie maar eentje meedoen: degene die het langst geleden speelde (nooit
+-- gespeeld telt als het langst geleden, daarna op id). Zo wisselen twee
+-- Nieuwjaarsnummers elkaar af in plaats van samen in dezelfde batch te
+-- belanden, en pakt hij automatisch de volgende zodra er meer nummers
+-- bijkomen.
+newyear_tracks as (
+    select
+        t.id,
+        coalesce(tp.lastPlayed, 0) as last_played
+    from tracks t
+    join genre_flags gf on gf.track = t.id
+    left join tracks_persistent tp on tp.urlmd5 = t.urlmd5
+    where coalesce(gf.is_newyear, 0) = 1
 ),
 -- Hoeveel nummers uit de twee grote groepen speelden er recent? Alleen
 -- daadwerkelijk gespeelde nummers tellen (tracks_persistent.lastPlayed),
@@ -135,6 +170,8 @@ base_eligible as (
         coalesce(t.bpm, 0) as bpm,
         s.sinterklaas_share,
         s.christmas_share,
+        s.newyear_share,
+        s.newyear_gap_seconds,
         case
             when coalesce(tf.is_slow, 0) = 1 then 'Slow'
             when coalesce(tf.is_very_slow, 0) = 1 then 'Very Slow'
@@ -153,9 +190,14 @@ base_eligible as (
             else 0
         end as is_sinterklaas,
         coalesce(gf.is_christmas, 0) as is_christmas,
+        coalesce(gf.is_newyear, 0) as is_newyear,
         coalesce(gf.is_spaans, 0) as is_spaans,
         coalesce(gf.is_nederlandstalig, 0) as is_nederlandstalig,
         case
+            -- Nieuwjaar is op 1 januari een eigen pool. Buiten die dag komt
+            -- een NewYear-nummer hier niet eens (zie het where-blok), tenzij
+            -- het ook Kerst is; dan volgt het de kerstregels.
+            when coalesce(gf.is_newyear, 0) = 1 and s.newyear_share > 0 then 'NewYear'
             when coalesce(gf.is_sinterklaas, 0) = 1 and s.sinterklaas_share > 0 then 'Sinterklaas'
             when coalesce(gf.is_christmas, 0) = 1 and s.christmas_share > 0 then 'Christmas'
             -- Hits-pool is rating-gedreven (vanaf 4,0*), niet alleen genre.
@@ -244,10 +286,40 @@ base_eligible as (
         and (
             s.christmas_share > 0
             or coalesce(gf.is_christmas, 0) = 0
+            -- Een nummer met Kerst en NewYear erop mag op nieuwjaarsdag mee.
+            or (s.newyear_share > 0 and coalesce(gf.is_newyear, 0) = 1)
         )
         and (
             s.sinterklaas_share > 0
             or coalesce(gf.is_sinterklaas, 0) = 0
+        )
+
+        -- Nieuwjaarsmuziek (genre NewYear) alleen op 1 januari. Heeft een
+        -- nummer daarnaast ook Kerst, dan volgt het de kerstregels hierboven
+        -- en wordt het dus niet geweerd. Van de overige Nieuwjaarsnummers mag
+        -- alleen degene die het langst niet speelde mee (rotatie).
+        and (
+            coalesce(gf.is_newyear, 0) = 0
+            or (coalesce(gf.is_christmas, 0) = 1 and s.christmas_share > 0)
+            or (
+                s.newyear_share > 0
+                and not exists (
+                    select 1
+                    from newyear_tracks nt
+                    where nt.id <> t.id
+                      and (
+                          nt.last_played < coalesce(tp.lastPlayed, 0)
+                          or (nt.last_played = coalesce(tp.lastPlayed, 0) and nt.id < t.id)
+                      )
+                )
+                -- en de vorige Nieuwjaarsplaat moet lang genoeg geleden zijn,
+                -- zodat twee nummers niet vlak na elkaar komen.
+                and not exists (
+                    select 1
+                    from newyear_tracks nt
+                    where nt.last_played > cast(strftime('%s', 'now') as integer) - s.newyear_gap_seconds
+                )
+            )
         )
 ),
 eligible as (
@@ -257,6 +329,9 @@ eligible as (
     from base_eligible
     where
         case
+            -- Nieuwjaar: vangnet van een half uur; de rotatie en de
+            -- minimumafstand in het where-blok doen het echte werk.
+            when is_newyear = 1 and newyear_share > 0 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - newyear_gap_seconds)
             when is_sinterklaas = 1 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - 86400)
             when is_christmas = 1 then last_played is null or last_played < (cast(strftime('%s', 'now') as integer) - tier_cooldown)
             -- Oldies zijn in de avond juist welkom: korte pauze in plaats van de
@@ -291,9 +366,10 @@ category_targets as (
         case ct.category
             when 'Sinterklaas' then s.sinterklaas_share
             when 'Christmas'   then s.christmas_share
-            when 'Hits'        then max(0.0, 1.0 - s.sinterklaas_share - s.christmas_share) * 0.060
-            when 'Oldies'      then max(0.0, 1.0 - s.sinterklaas_share - s.christmas_share) * 0.180
-            else                    max(0.0, 1.0 - s.sinterklaas_share - s.christmas_share) * 0.760
+            when 'NewYear'     then s.newyear_share
+            when 'Hits'        then max(0.0, 1.0 - s.sinterklaas_share - s.christmas_share - s.newyear_share) * 0.060
+            when 'Oldies'      then max(0.0, 1.0 - s.sinterklaas_share - s.christmas_share - s.newyear_share) * 0.180
+            else                    max(0.0, 1.0 - s.sinterklaas_share - s.christmas_share - s.newyear_share) * 0.760
         end as target_share
     from category_totals ct
     cross join settings s
@@ -308,6 +384,7 @@ weighted as (
         e.*,
         case
             when sc.active_target_share > 0 then ct.target_share / sc.active_target_share
+            when e.category = 'NewYear' then 0.100
             when e.category = 'Hits'   then 0.060
             when e.category = 'Oldies' then 0.180
             else                            0.760

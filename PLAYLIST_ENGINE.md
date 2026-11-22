@@ -498,3 +498,24 @@ bridge-log (`MaxSampleRate=`) en of `<binding>192.168.0.54</binding>` bewaard is
 - Seasonal rules such as Kerst and Sinterklaas remain best kept in SQL.
 - Time-of-day switching such as DagMix at 16:00 and AvondMix after 18:00 can now live in the engine through `routing_windows`.
 - Generic skip rules such as Live, Karaoke or minimum rating remain easier to manage in JSON.
+- A small seasonal genre with a *repeating* rhythm needs one thing that SQL cannot do: the
+  session history normally blocks a track for the rest of the session. That is what
+  `genre_rules` is for:
+
+  ```json
+  "genre_rules": {
+    "NewYear": {"exempt_from_history": true, "max_in_queue": 1}
+  }
+  ```
+
+  - `exempt_from_history` (default `true`): a track with this genre may be selected again
+    later in the same session (it also bypasses the artist window, otherwise its own earlier
+    play would block it for ~30 tracks). The SQL still decides *when*: DagMix/AvondMix only
+    allow the New Year track that played longest ago, and only ~55 minutes after the previous
+    one.
+  - `max_in_queue` (default `0` = unlimited): maximum number of tracks with this genre in the
+    queue at the same time. With `1`, two New Year songs can never play back to back, even if
+    the SQL returns both.
+  - Genre names are matched case-insensitively and without spaces (`NewYear`, `New Year` and
+    `newyear` are the same rule).
+

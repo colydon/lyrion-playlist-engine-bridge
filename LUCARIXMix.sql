@@ -42,6 +42,7 @@ genre_flags as (
         gt.track,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',kerst,') > 0 then 1 else 0 end) as is_christmas,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',sinterklaas,') > 0 then 1 else 0 end) as is_sinterklaas,
+        max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',newyear,') > 0 then 1 else 0 end) as is_newyear,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',live,') > 0 then 1 else 0 end)
         + max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',karaoke,') > 0 then 1 else 0 end)
         + max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',kinderliedjes,') > 0 then 1 else 0 end)
@@ -109,6 +110,14 @@ base_eligible as (
         and coalesce(gf.is_permanent_exclusion, 0) = 0
         and coalesce(gf.is_sinterklaas, 0) = 0
         and (coalesce(gf.is_christmas, 0) = 0 or s.christmas_allowed = 1)
+
+        -- Nieuwjaarsmuziek (genre NewYear) alleen op 1 januari. Heeft een
+        -- nummer daarnaast ook Kerst, dan volgt het de kerstregels hierboven.
+        and (
+            coalesce(gf.is_newyear, 0) = 0
+            or coalesce(gf.is_christmas, 0) = 1
+            or strftime('%m-%d', 'now', 'localtime') = '01-01'
+        )
         and dph.id is null
 ),
 eligible as (

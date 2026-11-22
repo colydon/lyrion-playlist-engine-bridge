@@ -219,5 +219,11 @@
       "value": 2.0,
       "enabled": true
     }
-  ]
+  ],
+  "genre_rules": {
+    "NewYear": {
+      "exempt_from_history": true,
+      "max_in_queue": 1
+    }
+  }
 }

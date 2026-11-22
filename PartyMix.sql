@@ -42,6 +42,7 @@ genre_flags as (
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',hits,') > 0 then 1 else 0 end) as is_hit,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',kerst,') > 0 then 1 else 0 end) as is_christmas,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',sinterklaas,') > 0 then 1 else 0 end) as is_sinterklaas,
+        max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',newyear,') > 0 then 1 else 0 end) as is_newyear,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',lounge,') > 0 then 1 else 0 end) as is_lounge,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',oldies,') > 0 then 1 else 0 end) as is_oldies,
         max(case when instr(',' || replace(lower(g.name), ' ', '') || ',', ',fout,') > 0 then 1 else 0 end) as is_fout,
@@ -143,6 +144,13 @@ base_eligible as (
         -- PartyMix is niet seizoensgebonden: nooit Kerst of Sinterklaas.
         and coalesce(gf.is_christmas, 0) = 0
         and coalesce(gf.is_sinterklaas, 0) = 0
+
+        -- Nieuwjaarsmuziek (genre NewYear) alleen op 1 januari (wel op
+        -- nieuwjaarsdag, niet op oudejaarsavond).
+        and (
+            coalesce(gf.is_newyear, 0) = 0
+            or strftime('%m-%d', 'now', 'localtime') = '01-01'
+        )
 
         -- Voorkom herhaling van nummers die al in de actieve sessie zitten.
         and dph.id is null
