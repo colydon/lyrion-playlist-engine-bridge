@@ -498,6 +498,11 @@ bridge-log (`MaxSampleRate=`) en of `<binding>192.168.0.54</binding>` bewaard is
 - Seasonal rules such as Kerst and Sinterklaas remain best kept in SQL.
 - Time-of-day switching such as DagMix at 16:00 and AvondMix after 18:00 can now live in the engine through `routing_windows`.
 - Generic skip rules such as Live, Karaoke or minimum rating remain easier to manage in JSON.
+- Manual playback is never filtered. Custom Skip 3 hooked `playlist newsong` and deleted *any*
+  matching track, including one the user started by hand, so its filter sets have been moved out
+  of `prefs/CustomSkip3/` (see README.txt, "CUSTOM SKIP"). Selection rules live in the SQL and in
+  `skip_rules`, and both only apply to tracks the engine picks itself. To bring the old filters
+  back, move the `*.cs.xml` files one directory up and restart LMS.
 - A small seasonal genre with a *repeating* rhythm needs one thing that SQL cannot do: the
   session history normally blocks a track for the rest of the session. That is what
   `genre_rules` is for:

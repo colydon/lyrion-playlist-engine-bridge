@@ -8,28 +8,31 @@ This build also adds a dedicated Sinterklaas schedule:
 - Dec 5: 33%
 - all other days: 0%
 
-CUSTOM SKIP
-Keep your current defaultfilterset.cs.xml exactly as it is, including:
-- Kerst 100%
-- Live 100%
-- Karaoke 100%
-- Kinderliedjes 100%
-- Kindermuziek 100%
-- Sinterklaas 100%
-- Rated below 2 stars 100%
+CUSTOM SKIP (uitgeschakeld sinds 22-11-2026)
+Custom Skip 3 filtert op het moment dat een nummer start (playlist newsong) en
+gooit het nummer uit de wachtrij als een filter matcht. Dat gold ook voor
+nummers die je zelf handmatig start: een Kinderliedje of een nummer onder de 2
+sterren speelde een paar seconden en werd er daarna uitgegooid.
 
-Create/use a second filter set with the exact filename:
-    dagmix.cs.xml
-It should contain the same rules EXCEPT:
-- Genre: Kerst
-- Genre: Sinterklaas
+Daarom staan er sinds 22-11-2026 GEEN filtersets meer in
+prefs/CustomSkip3/. De twee oude sets staan veilig in
+    prefs/CustomSkip3/uit-20261122-manual/
+(met de hand terugzetten = de twee *.cs.xml-bestanden weer een map hoger
+zetten en LMS herstarten; de bestandsnaam moet op .cs.xml eindigen, anders
+leest de plugin hem alsnog in).
 
-The SQL uses these valid DPL actions:
-    PlaylistStartAction1:cli:customskip setfilter dagmix.cs.xml
-    PlaylistStopAction1:cli:customskip setfilter defaultfilterset.cs.xml
+Alle selectieregels zitten nu op twee plekken en geen van beide raakt handmatig
+afspelen:
+- de playlist-SQL: Live, Karaoke, Kinderliedjes en Kindermuziek vallen altijd
+  af, Lounge alleen in SummerMix, minimaal 2 sterren, en de seizoensregels
+  (Kerst/Sinterklaas/NewYear)
+- `skip_rules` in playlist_engine_config.json: dezelfde genre-uitsluitingen en
+  de minimumrating, maar alleen voor wat de engine zelf kiest
 
-DPL switches the primary Custom Skip filter while DagMix is active and restores
-the normal filter when it stops. Other playlists do not need to be edited.
+Gevolg: de engine zoekt die nummers nog steeds niet zelf uit, maar je kunt ze
+wel handmatig starten of in een wachtrij zetten. Ook de DPL-acties in
+DagMix.sql (`customskip setfilter dagmix.cs.xml`) blijven staan voor als de
+filtersets ooit terugkomen; zonder filtersets doen ze niets.
 
 CHRISTMAS SCHEDULE (local LMS time)
 - Dec 5: 0% (Sinterklaas only, never combine the two)
