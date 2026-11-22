@@ -32,6 +32,13 @@
     "queue_prune_keep_played_tracks": 2,
     "queue_prune_min_tracks": 10
   },
+  "rooms": {
+    "Kantoor": {
+      "players": ["Kantoor", "Laptop"],
+      "default": "Kantoor",
+      "volume_step": 5
+    }
+  },
   "playlists": {
     "DagMix": {
       "title": "DagMix",

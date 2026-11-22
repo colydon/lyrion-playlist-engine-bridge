@@ -138,8 +138,24 @@ GET http://<engine-host>:8787/api/playing?player_name=KantoorSpeaker&token=<toke
 
 - `session`: the engine manages a playlist on this player
 - `playing`: LMS is actually playing (also when playback was started outside the engine)
+- `online`: the player is connected to LMS right now
 - `state`: `idle`, `external` (playing without an engine session), `playing`, `suspended`
-  (paused/stopped with an intact managed queue) or `stopping_after_track`
+  (paused/stopped with an intact managed queue), `stopping_after_track` or `offline`
+
+**Is the player online?**
+
+```text
+GET http://<engine-host>:8787/api/online?player_name=Laptop&token=<token>
+-> true | false   (plain text)
+```
+
+A laptop running squeezelite disappears from LMS when it is switched off. That is a
+normal state, not an error: `/api/online` answers `false` and `/api/state` returns
+`{"player_name":"Laptop","online":false,"state":"offline","playing":false,"session":false,"volume":null,"muted":null}`.
+Once the player reconnects, `online` is `true` and the other endpoints work again.
+`/api/playing` answers `false` (instead of an error) for an unknown or offline player,
+so a Homey flow card never fails. `/api/players` also reports `online`, and a room
+without a single connected member returns `online: false` with an empty `members` list.
 
 Recovery behavior:
 
@@ -303,6 +319,68 @@ Homey recommendation:
 - Make one Flow per room if you want fixed buttons.
 - Make one Advanced Flow that first chooses a player and then posts the corresponding `player_name`.
 - Keep the playlist id stable, for example `DagMix`, even if the title shown in LMS changes later.
+
+**Room controls: volume, mute and transport**
+One Stream Deck key or remote button per action; the engine picks the player itself.
+Useful when a room has more than one player (for example a Cast speaker and a
+squeezelite instance on a laptop).
+
+```text
+POST http://<engine-host>:8787/api/control
+Header: X-API-Key: <token>
+Body: {"room":"Kantoor","action":"volume_up"}
+```
+
+Actions:
+
+| action | what it does |
+| --- | --- |
+| `volume_up` / `volume_down` | one step from the room config (`volume_step`, default 5) |
+| `volume` + `"delta": 10` | custom step, clamped to 0..100 |
+| `volume` + `"value": 35` | absolute volume |
+| `mute` (or `mute_on` / `mute_off`) | toggle or set the mute state |
+| `play_pause` | pause, resume, or start when the queue is stopped |
+| `next` / `previous` | move through the queue |
+
+Response:
+
+```json
+{"ok":true,"action":"volume_up","room":"Kantoor","player_id":"...","player_name":"Laptop",
+ "resolved_by":"playing","mode":"play","playing":true,"paused":false,"power":1,
+ "volume":47,"muted":false,"changed":{"volume_from":42,"volume_to":47}}
+```
+
+Player selection inside a room (`resolved_by`):
+
+1. `playing` — the player that is playing right now;
+2. `paused` — a paused player is still the one you were using;
+3. `last_active` — whoever played last (stored in the state db, survives restarts);
+4. `powered_on` — a player that is switched on;
+5. `default` / `first_member` — the configured default, then the first entry.
+
+`power` alone is not a usable signal: squeezelite reports `power=1` for as long as
+the laptop is on, while a Cast player is powered off between sessions. A player
+that is not connected to LMS at all is skipped automatically.
+
+Force a specific player with `player_name` or `player_id`, and omit `room` to let
+the engine use the single player that is currently playing. `GET /api/zone?room=Kantoor`
+returns the same choice plus the state of every member, and `room` is also accepted
+by `/api/state`, `/api/playing` and `/api/toggle`.
+
+Notes:
+
+- a skip requested through the API is not counted as a skip storm, so a double
+  press never triggers a receiver power-cycle;
+- `next` / `previous` only work while the player is playing or paused. On a stopped
+  player the engine answers 409, because LMS itself would start playback on
+  `playlist index +1`;
+- pausing keeps the managed session intact: pressing play resumes topping up;
+- `previous` only works within what is still in the queue;
+- mute goes through the bridge to the Cast volume. If a bridge ignores muting, use
+  the volume actions instead;
+- mute is a real toggle, so a second press right after the first still flips. When the
+  device has not reported the new state yet the response contains
+  `"mute_confirmed": false`; the command itself was sent.
 
 **4. Add Extra Playlists**
 To add a new playlist:

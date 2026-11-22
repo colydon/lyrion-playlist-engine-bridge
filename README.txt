@@ -567,11 +567,32 @@ Voor de simpelste vergelijking in een Advanced Flow is er ook platte tekst:
     -> false
 
 Betekenis van de velden:
+- online       : de speler is nu met LMS verbonden (bij een laptop die uit staat
+                 dus false; het is dan geen fout)
 - session      : de engine beheert een playlist op deze speler (dit is precies
                  wat de oude virtuele schakelaar "aan" betekende)
 - playing      : LMS speelt nu daadwerkelijk af (ook als dat buiten de engine om gaat)
+- paused       : de speler staat gepauzeerd
 - stop_pending : er loopt een "stop na dit nummer"
-- state        : idle | external | playing | suspended | stopping_after_track
+- state        : idle | external | playing | suspended | stopping_after_track | offline
+
+IS DE SPELER ONLINE? (voor flows die op een specifieke speler mikken)
+    GET http://192.168.0.54:8787/api/online?player_name=Laptop&token=<token>
+    -> true
+    -> false
+
+Een laptop met squeezelite verdwijnt uit LMS zodra hij uit gaat. Dat is een
+normale stand, geen fout: /api/online zegt dan false en /api/state geeft
+    {"player_name":"Laptop","online":false,"state":"offline","playing":false,
+     "session":false,"volume":null,"muted":null}
+Zodra de speler weer verbonden is, staat online op true en werken /api/playing,
+/api/control en de rest gewoon. /api/playing geeft voor een onbekende of offline
+speler nu "false" in plaats van een fout, zodat een Flow geen mislukte kaart
+krijgt. /api/players heeft naast connected ook een veld online.
+
+Advies voor Homey: laat een Flow eerst /api/online checken en stuur pas daarna een
+/api/control- of /api/start-opdracht. Zo'n Flow kun je periodiek laten lopen
+(bijv. elke minuut met een timer-kaart) om te merken dat de laptop weer aan staat.
 
 Advies voor notificaties:
 - wil je "playlist actief" aanhouden zoals vroeger -> gebruik session
@@ -580,3 +601,79 @@ Advies voor notificaties:
 Voorbeeld in Homey (Advanced Flow): HTTP GET met "JSON" aan, daarna een
 logica-kaart op de tag playing of session. Of gebruik /api/playing en vergelijk
 de tekst met true.
+
+VOLUME, PAUZE EN SKIPPEN (STREAM DECK / HOMEY)
+    POST http://192.168.0.54:8787/api/control
+    Header: X-API-Key: <token>
+    Body: {"room":"Kantoor","action":"volume_up"}
+
+Een kamer met twee spelers (Kantoor = Cast, Laptop = squeezelite): de engine
+kiest zelf welke speler de knop krijgt.
+
+1. de speler die nu speelt;
+2. anders de speler die gepauzeerd staat;
+3. anders de speler die het laatst speelde (blijft bewaard in de state-db);
+4. anders de speler die aan staat;
+5. anders de standaardspeler van de kamer.
+
+Op `power` alleen is niet te vertrouwen: squeezelite meldt altijd "aan" zolang
+de laptop aan staat, terwijl een Cast-speler tussen twee sessies uit staat.
+
+Acties (action):
+    volume_up / volume_down      stap uit de config (standaard 5)
+    volume + "delta": 10         eigen stap (wordt afgekapt op 0..100)
+    volume + "value": 35         absolute waarde
+    mute                         aan/uit wisselen (ook: mute_on / mute_off)
+    play_pause                   pauzeren of hervatten
+    next / previous              volgende of vorige in de wachtrij
+
+Response:
+    {"ok":true,"action":"volume_up","room":"Kantoor","player_name":"Laptop",
+     "resolved_by":"playing","mode":"play","playing":true,"paused":false,
+     "volume":47,"muted":false,"changed":{"volume_from":42,"volume_to":47}}
+
+`resolved_by` zegt waarom die speler gekozen is: playing, paused, last_active,
+powered_on, default, first_member, explicit of only_playing.
+
+Een vaste speler forceren: {"room":"Kantoor","player_name":"Laptop","action":"next"}
+(of "player_id"). Zonder "room" en zonder speler pakt de engine de enige speler
+die nu speelt.
+
+Kamer instellen in playlist_engine_config.json (daarna de engine herstarten):
+    "rooms": {
+      "Kantoor": {"players": ["Kantoor", "Laptop"], "default": "Kantoor", "volume_step": 5}
+    }
+Korter mag ook: "rooms": {"Kantoor": ["Kantoor", "Laptop"]}
+
+Wie is nu de actieve speler in een kamer?
+    GET http://192.168.0.54:8787/api/zone?room=Kantoor&token=<token>
+    -> {"room":"Kantoor","player_name":"Laptop","resolved_by":"playing",
+        "mode":"play","playing":true,"volume":47,"muted":false,"members":[...]}
+
+/api/state, /api/playing en /api/toggle accepteren nu ook ?room=Kantoor.
+
+STREAM DECK VIA HOMEY (per toets één Flow)
+1. Stream Deck: zet de Homey-plugin op een toets en kies "Start Flow".
+2. Homey: maak een Flow met de actie Logic -> "Make a web request":
+     Method : POST
+     URL    : http://192.168.0.54:8787/api/control
+     Header : Content-Type: application/json
+              X-API-Key: <token>
+     Body   : {"room":"Kantoor","action":"volume_up"}
+3. Herhaal dat voor volume_down, play_pause, next, previous en mute.
+
+Let op:
+- next/previous via de API tellen niet als skip-storm; de engine slaat de
+  power-cycle dus over en twee keer snel drukken is veilig.
+- next/previous werken alleen als de speler speelt of gepauzeerd staat. Op een
+  stilstaande speler antwoordt de engine met 409: LMS zou bij `playlist index +1`
+  de weergave starten, en dat hoort een transportknop niet te doen.
+- Pauzeren laat de sessie intact: na play gaat het bijvullen gewoon verder.
+- previous werkt alleen binnen wat nog in de wachtrij staat.
+- Mute op de Cast-speler gaat via de bridge naar het Cast-volume; geeft de
+  bridge dat niet door, gebruik dan volume (of zet hem op 0 en terug).
+- mute is een echte toggle, dus ook een tweede druk vlak erna wisselt goed. Geeft
+  het apparaat de stand nog niet terug, dan staat "mute_confirmed": false in de
+  response; de opdracht is dan wel verstuurd.
+- resolved_by is de snelste manier om te zien of de keuze klopt als een toets
+  eens de verkeerde speler lijkt te pakken.

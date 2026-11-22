@@ -113,6 +113,28 @@ class PlaylistDefinition:
         }
 
 
+@dataclass(frozen=True)
+class RoomDefinition:
+    """Een kamer met één of meer LMS-spelers (bijv. een Cast-box en een laptop).
+
+    De volgorde in `players` is de voorkeursvolgorde; `default_player` is de
+    terugval als er nog nooit iets op een van de spelers speelde.
+    """
+
+    name: str
+    players: List[str]
+    default_player: Optional[str] = None
+    volume_step: int = 5
+
+    def to_api_payload(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "players": list(self.players),
+            "default_player": self.default_player,
+            "volume_step": self.volume_step,
+        }
+
+
 @dataclass
 class EngineConfig:
     config_path: Path
@@ -145,6 +167,7 @@ class EngineConfig:
     auto_discover_playlists: bool
     skip_rules: List[Dict[str, Any]]
     playlists: Dict[str, PlaylistDefinition]
+    rooms: Dict[str, RoomDefinition] = field(default_factory=dict)
 
     @classmethod
     def load(cls, config_path: Path) -> "EngineConfig":
@@ -177,6 +200,7 @@ class EngineConfig:
         playlist_overrides = dict(raw.get("playlist_overrides", {}))
         configured_playlists = dict(raw.get("playlists", {}))
         auto_discover_playlists = bool(engine.get("auto_discover_playlists", True))
+        rooms = cls._parse_rooms(raw.get("rooms", {}))
 
         playlist_catalog: Dict[str, PlaylistDefinition] = {}
 
@@ -256,7 +280,56 @@ class EngineConfig:
             auto_discover_playlists=auto_discover_playlists,
             skip_rules=list(raw.get("skip_rules", [])),
             playlists=playlist_catalog,
+            rooms=rooms,
         )
+
+    def room_definition(self, name: str) -> Optional[RoomDefinition]:
+        lowered = str(name or "").strip().lower()
+        if not lowered:
+            return None
+        for room in self.rooms.values():
+            if room.name.lower() == lowered:
+                return room
+        return None
+
+    def room_payloads(self) -> List[Dict[str, Any]]:
+        return [room.to_api_payload() for room in sorted(self.rooms.values(), key=lambda item: item.name.lower())]
+
+    @classmethod
+    def _parse_rooms(cls, raw_rooms: Any) -> Dict[str, RoomDefinition]:
+        """Leest het `rooms`-blok.
+
+        Beide vormen zijn toegestaan:
+            "rooms": {"Kantoor": ["Kantoor", "Laptop"]}
+            "rooms": {"Kantoor": {"players": ["Kantoor", "Laptop"],
+                                    "default": "Kantoor", "volume_step": 5}}
+        """
+        rooms: Dict[str, RoomDefinition] = {}
+        if not isinstance(raw_rooms, dict):
+            return rooms
+
+        for room_name, raw_room in raw_rooms.items():
+            name = str(room_name or "").strip()
+            if not name:
+                continue
+            if isinstance(raw_room, dict):
+                players = [str(item).strip() for item in raw_room.get("players", []) if str(item).strip()]
+                default_player = str(raw_room.get("default") or "").strip() or (players[0] if players else None)
+                try:
+                    volume_step = max(1, min(50, int(raw_room.get("volume_step", 5))))
+                except (TypeError, ValueError):
+                    volume_step = 5
+            else:
+                players = [str(item).strip() for item in (raw_room or []) if str(item).strip()]
+                default_player = players[0] if players else None
+                volume_step = 5
+            rooms[name] = RoomDefinition(
+                name=name,
+                players=players,
+                default_player=default_player,
+                volume_step=volume_step,
+            )
+        return rooms
 
     @staticmethod
     def _parse_optional_int(value: Any) -> Optional[int]:
@@ -373,6 +446,13 @@ class StateStore:
                     queued_at integer not null,
                     primary key (player_id, playlist_name, track_id)
                 );
+
+                create table if not exists player_activity (
+                    player_id text primary key,
+                    player_name text,
+                    last_active_at integer not null,
+                    last_mode text
+                );
                 """
             )
 
@@ -464,6 +544,33 @@ class StateStore:
                 (player_id, playlist_name),
             )
 
+    def note_player_activity(self, player_id: str, player_name: str, mode: str) -> None:
+        """Onthoudt wanneer een speler voor het laatst speelde of pauzeerde.
+
+        Wordt gebruikt om binnen een kamer met meerdere spelers de "laatst
+        actieve" te kiezen. Overleeft een herstart van de engine.
+        """
+        with self._connect() as connection:
+            connection.execute(
+                """
+                insert into player_activity (player_id, player_name, last_active_at, last_mode)
+                values (?, ?, ?, ?)
+                on conflict(player_id) do update set
+                    player_name = excluded.player_name,
+                    last_active_at = excluded.last_active_at,
+                    last_mode = excluded.last_mode
+                """,
+                (player_id, player_name or "", int(time.time()), str(mode or "")),
+            )
+
+    def player_activity(self, player_id: str) -> Optional[Dict[str, Any]]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "select player_id, player_name, last_active_at, last_mode from player_activity where player_id = ?",
+                (player_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
 
 class LmsClient:
     def __init__(self, base_url: str):
@@ -525,7 +632,17 @@ class LmsClient:
             raise RequestError("LMS returned no usable player list", HTTPStatus.BAD_GATEWAY)
         return list(payload.get("players_loop", []))
 
-    def resolve_player(self, player_name: Optional[str], player_id: Optional[str]) -> Dict[str, Any]:
+    def find_player(
+        self,
+        player_name: Optional[str],
+        player_id: Optional[str],
+    ) -> Optional[Dict[str, Any]]:
+        """Zoekt een speler zonder fout te gooien (None = niet bij LMS bekend).
+
+        Een speler die niet verbonden is (laptop uit, Cast-apparaat losgekoppeld)
+        staat niet in de spelerslijst. Voor Homey is dat een geldige stand en
+        geen fout, dus deze variant bestaat naast `resolve_player`.
+        """
         players = self.list_players()
 
         if player_id:
@@ -538,11 +655,17 @@ class LmsClient:
             if len(exact) == 1:
                 return exact[0]
 
-            partial = [player for player in players if player_name.lower() in player.get("name", "").lower()]
+            partial = [player for player in players if player_name.lower() in str(player.get("name") or "").lower()]
             if len(partial) == 1:
                 return partial[0]
 
-        raise RequestError("Could not resolve LMS player.", HTTPStatus.NOT_FOUND)
+        return None
+
+    def resolve_player(self, player_name: Optional[str], player_id: Optional[str]) -> Dict[str, Any]:
+        player = self.find_player(player_name, player_id)
+        if player is None:
+            raise RequestError("Could not resolve LMS player.", HTTPStatus.NOT_FOUND)
+        return player
 
     def status(self, player_id: str) -> Dict[str, Any]:
         response = self._request(player_id, ["status", 0, 500, "tags:cgABbehldiqtyrSSuoKLNJ"])
@@ -584,6 +707,34 @@ class LmsClient:
 
     def play(self, player_id: str) -> None:
         self._request(player_id, ["play"])
+
+    def pause(self, player_id: str) -> None:
+        self._request(player_id, ["pause", "1"])
+
+    def resume(self, player_id: str) -> None:
+        self._request(player_id, ["pause", "0"])
+
+    def next_track(self, player_id: str) -> None:
+        self._request(player_id, ["playlist", "index", "+1"])
+
+    def previous_track(self, player_id: str) -> None:
+        self._request(player_id, ["playlist", "index", "-1"])
+
+    def set_volume(self, player_id: str, value: int) -> None:
+        self._request(player_id, ["mixer", "volume", str(max(0, min(100, int(value))))])
+
+    def change_volume(self, player_id: str, delta: int) -> None:
+        delta = int(delta)
+        if delta == 0:
+            return
+        self._request(player_id, ["mixer", "volume", f"{delta:+d}"])
+
+    def set_muting(self, player_id: str, value: Any) -> None:
+        """0 = unmute, 1 = mute, "toggle" = wisselen."""
+        if isinstance(value, str):
+            self._request(player_id, ["mixer", "muting", value])
+            return
+        self._request(player_id, ["mixer", "muting", "1" if value else "0"])
 
     def stop(self, player_id: str) -> None:
         self._request(player_id, ["stop"])
@@ -961,6 +1112,15 @@ class SessionManager:
         self._last_playback_at: Dict[str, float] = {}
         # Spelers buiten een engine-sessie (handmatig gestart) die op 0 s blijven hangen.
         self._unmanaged_stall_since: Dict[str, float] = {}
+        # Een sprong in de wachtrij die via de API (Homey/Stream Deck) is gevraagd:
+        # dat is geen skip-storm en mag de receiver dus niet power-cyclen.
+        self._expected_skip_until: Dict[str, float] = {}
+        # Laatst weggeschreven activiteit per speler (spaarzaam met db-schrijfacties).
+        self._activity_note_at: Dict[str, tuple] = {}
+        # Laatst gezette mute-stand per speler: LMS en de CastBridge lopen bij een
+        # uitstaand apparaat soms achter, en dan zou een tweede druk op dezelfde
+        # toets de verkeerde kant op redeneren.
+        self._mute_state: Dict[str, tuple] = {}
 
     def start_background_loop(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -983,6 +1143,8 @@ class SessionManager:
         self._stall_streak.pop(player_id, None)
         self._last_queue_index.pop(player_id, None)
         self._skip_storm.pop(player_id, None)
+        self._expected_skip_until.pop(player_id, None)
+        self._mute_state.pop(player_id, None)
 
     def _can_attempt_recovery(self, player_id: str, now: float) -> bool:
         last_attempt_at = self._last_recovery_attempt_at.get(player_id, 0.0)
@@ -1314,6 +1476,11 @@ class SessionManager:
             power = int(status.get("power") if status.get("power") is not None else 1)
             connected = int(status.get("connected") if status.get("connected") is not None else 1)
 
+            # Onthouden wie het laatst speelde, zodat een kamerbrede knop weet welke
+            # van de spelers in die kamer hij moet aansturen.
+            if mode in {"play", "pause"}:
+                self._note_activity(player_id, session.get("player_name"), mode)
+
             queue_ids = [int(item["id"]) for item in status.get("playlist_loop", []) if str(item.get("id", "")).isdigit()]
             current_index = int(status.get("playlist_cur_index") or 0)
             playback_time = float(status.get("time") or 0.0)
@@ -1460,7 +1627,21 @@ class SessionManager:
 
                 previous_index = self._last_queue_index.get(player_id)
                 self._last_queue_index[player_id] = current_index
-                if playback_time <= 1.0 and previous_index is not None and current_index > previous_index:
+                skip_from_remote = False
+                if previous_index is not None and current_index > previous_index:
+                    if self._expected_skip_until.get(player_id, 0.0) >= now:
+                        # Deze sprong kwam van een knop, niet van een apparaat dat
+                        # elke stream weigert; dus geen skip-storm tellen.
+                        skip_from_remote = True
+                        self._expected_skip_until.pop(player_id, None)
+                        LOGGER.info(
+                            "Queue index for %s moved to %s after a remote skip; not counting it as a skip storm.",
+                            player_id,
+                            current_index,
+                        )
+                if skip_from_remote:
+                    self._skip_storm.pop(player_id, None)
+                elif playback_time <= 1.0 and previous_index is not None and current_index > previous_index:
                     self._skip_storm[player_id] = self._skip_storm.get(player_id, 0) + 1
                 else:
                     self._skip_storm.pop(player_id, None)
@@ -1540,6 +1721,7 @@ class SessionManager:
                 )
             LOGGER.info("Added %s tracks to %s on %s", len(tracks), session["playlist_name"], player_id)
 
+        self._track_room_activity(now)
         self._watch_unmanaged_players(now)
 
     def _watch_unmanaged_players(self, now: float) -> None:
@@ -1591,6 +1773,449 @@ class SessionManager:
             )
             self._power_cycle_receiver(player_id, int(status.get("playlist_cur_index") or 0))
             self._unmanaged_stall_since.pop(player_id, None)
+
+    def _note_activity(self, player_id: str, player_name: Optional[str], mode: str) -> None:
+        """Onthoudt dat deze speler nu speelt of pauzeert.
+
+        Maximaal één schrijfactie per twee minuten per speler (behalve als de
+        modus wisselt): de tijd binnen één sessie is niet interessant, de
+        volgorde tussen spelers in dezelfde kamer wel.
+        """
+        now = time.time()
+        previous = self._activity_note_at.get(player_id)
+        if previous and previous[0] == mode and now - float(previous[1]) < 120:
+            return
+        self._activity_note_at[player_id] = (mode, now)
+        try:
+            self.state_store.note_player_activity(player_id, str(player_name or ""), mode)
+        except sqlite3.Error as exc:
+            LOGGER.warning("Could not store the activity of %s: %s", player_id, exc)
+
+    def _track_room_activity(self, now: float) -> None:
+        """Houdt de laatst-actief-tijd bij van kamerspelers zonder engine-sessie.
+
+        Spelers met een sessie worden al elke ronde bekeken; hier gaat het om
+        bijvoorbeeld de laptop die handmatig speelt.
+        """
+        if not self.config.rooms:
+            return
+        try:
+            players = self.lms.list_players()
+        except RequestError:
+            return
+
+        managed = {session["player_id"] for session in self.state_store.list_sessions()}
+        seen = set()
+        for room in self.config.rooms.values():
+            for reference in room.players:
+                player = self._find_room_player(players, reference)
+                if player is None:
+                    continue
+                player_id = player.get("playerid")
+                if not player_id or player_id in managed or player_id in seen:
+                    continue
+                seen.add(player_id)
+                try:
+                    status = self.lms.status(player_id)
+                except RequestError:
+                    continue
+                mode = str(status.get("mode") or "").lower()
+                if mode in {"play", "pause"}:
+                    self._note_activity(player_id, player.get("name"), mode)
+
+    @staticmethod
+    def _find_room_player(players: Sequence[Dict[str, Any]], reference: str) -> Optional[Dict[str, Any]]:
+        """Zoekt een speler op playerid, dan op exacte naam, dan op een uniek deel van de naam."""
+        wanted = str(reference or "").strip()
+        if not wanted:
+            return None
+        for player in players:
+            if player.get("playerid") == wanted:
+                return player
+        for player in players:
+            if str(player.get("name") or "").strip().lower() == wanted.lower():
+                return player
+        partial = [player for player in players if wanted.lower() in str(player.get("name") or "").lower()]
+        return partial[0] if len(partial) == 1 else None
+
+    @staticmethod
+    def _mixer_payload(status: Dict[str, Any]) -> Dict[str, Any]:
+        """Volume en mute-stand uit een LMS-status.
+
+        LMS geeft bij een gemute speler een NEGATIEF volume terug (-45 betekent
+        45, gedempt), dus het teken bepaalt de mute-stand (LMS CLI: `mixer volume`).
+        """
+        raw = status.get("mixer volume")
+        if raw in (None, ""):
+            return {"volume": None, "muted": None}
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return {"volume": None, "muted": None}
+        return {"volume": abs(int(round(value))), "muted": value < 0}
+
+    def _pick_zone_member(self, members: List[Dict[str, Any]], room: RoomDefinition) -> Dict[str, Any]:
+        """Kiest de speler die een kamerbrede knop moet aansturen.
+
+        Volgorde: speelt nu > staat gepauzeerd > laatst actief > staat aan >
+        standaardspeler van de kamer. Alleen op `power` afgaan werkt hier niet:
+        squeezelite meldt `power=1` zolang de laptop aan staat, terwijl een
+        Cast-speler tussen twee sessies uit staat.
+        """
+        activity: Dict[str, int] = {}
+        for member in members:
+            player_id = str(member["player"].get("playerid"))
+            row = self.state_store.player_activity(player_id)
+            activity[player_id] = int(row["last_active_at"]) if row else 0
+
+        def mode_of(member: Dict[str, Any]) -> str:
+            return str(member["status"].get("mode") or "").lower()
+
+        def power_of(member: Dict[str, Any]) -> int:
+            value = member["status"].get("power")
+            return int(value) if value is not None else 1
+
+        def activity_of(member: Dict[str, Any]) -> int:
+            return activity.get(str(member["player"].get("playerid")), 0)
+
+        for reason, group in (
+            ("playing", [member for member in members if mode_of(member) == "play"]),
+            ("paused", [member for member in members if mode_of(member) == "pause"]),
+            ("last_active", [member for member in members if activity_of(member) > 0]),
+        ):
+            if group:
+                chosen = max(group, key=lambda item: (activity_of(item), power_of(item)))
+                return {"player": chosen["player"], "status": chosen["status"], "reason": reason}
+
+        powered_on = [member for member in members if power_of(member) == 1]
+        if powered_on:
+            return {"player": powered_on[0]["player"], "status": powered_on[0]["status"], "reason": "powered_on"}
+
+        default_name = str(room.default_player or "").strip().lower()
+        if default_name:
+            for member in members:
+                if str(member["player"].get("name") or "").strip().lower() == default_name:
+                    return {"player": member["player"], "status": member["status"], "reason": "default"}
+        return {"player": members[0]["player"], "status": members[0]["status"], "reason": "first_member"}
+
+    def _resolve_zone(
+        self,
+        room: Optional[str] = None,
+        player_name: Optional[str] = None,
+        player_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Bepaalt welke speler bij een verzoek hoort.
+
+        Expliciete `player_name`/`player_id` wint altijd; met alleen `room` kiest
+        de engine zelf (zie `_pick_zone_member`). Zonder beide wordt de enige
+        spelende speler gebruikt, zodat één wereldwijde knop ook werkt.
+        """
+        room_definition: Optional[RoomDefinition] = None
+        if room:
+            room_definition = self.config.room_definition(room)
+            if room_definition is None:
+                known = ", ".join(sorted(item.name for item in self.config.rooms.values())) or "geen"
+                raise RequestError(f"Onbekende room: {room} (bekend: {known})", HTTPStatus.NOT_FOUND)
+
+        if player_name or player_id:
+            player = self.lms.resolve_player(player_name, player_id)
+            status = self.lms.status(player["playerid"])
+            return {
+                "player": player,
+                "status": status,
+                "resolved_by": "explicit",
+                "room": room_definition.name if room_definition else None,
+                "room_definition": room_definition,
+                "members": [{"player": player, "status": status}],
+            }
+
+        players = self.lms.list_players()
+        if room_definition is None:
+            playing = [player for player in players if str(player.get("isplaying") or "0") == "1"]
+            if len(playing) == 1:
+                status = self.lms.status(playing[0]["playerid"])
+                return {
+                    "player": playing[0],
+                    "status": status,
+                    "resolved_by": "only_playing",
+                    "room": None,
+                    "room_definition": None,
+                    "members": [{"player": playing[0], "status": status}],
+                }
+            raise RequestError(
+                "Geef room of player_name mee (of zorg dat er precies één speler speelt).",
+                HTTPStatus.BAD_REQUEST,
+            )
+
+        members: List[Dict[str, Any]] = []
+        for reference in room_definition.players:
+            player = self._find_room_player(players, reference)
+            if player is None:
+                continue
+            try:
+                status = self.lms.status(player["playerid"])
+            except RequestError:
+                continue
+            members.append({"player": player, "status": status})
+
+        if not members:
+            raise RequestError(
+                f"Geen van de spelers van {room_definition.name} is nu verbonden met LMS: "
+                f"{', '.join(room_definition.players)}.",
+                HTTPStatus.CONFLICT,
+            )
+
+        chosen = self._pick_zone_member(members, room_definition)
+        return {
+            "player": chosen["player"],
+            "status": chosen["status"],
+            "resolved_by": chosen["reason"],
+            "room": room_definition.name,
+            "room_definition": room_definition,
+            "members": members,
+        }
+
+    def zone_state(self, room: str) -> Dict[str, Any]:
+        """Welke speler is in deze kamer de actieve, en hoe staat hij ervoor?"""
+        try:
+            resolution = self._resolve_zone(room=room)
+        except RequestError as exc:
+            if exc.status != HTTPStatus.CONFLICT:
+                raise
+            # Niemand van deze kamer is verbonden: geldige stand, geen fout.
+            offline = self._offline_payload(None, None, room=room)
+            offline["members"] = []
+            return offline
+
+        members: List[Dict[str, Any]] = []
+        for member in resolution["members"]:
+            member_status = member["status"]
+            mode = str(member_status.get("mode") or "").lower()
+            payload: Dict[str, Any] = {
+                "player_id": member["player"].get("playerid"),
+                "player_name": member["player"].get("name"),
+                "online": True,
+                "mode": mode or None,
+                "playing": mode == "play",
+                "paused": mode == "pause",
+                "power": member_status.get("power"),
+            }
+            payload.update(self._mixer_payload(member_status))
+            members.append(payload)
+
+        player = resolution["player"]
+        chosen = resolution["status"]
+        mode = str(chosen.get("mode") or "").lower()
+        session = self.state_store.get_session(str(player["playerid"]))
+        result: Dict[str, Any] = {
+            "room": resolution["room"],
+            "player_id": player.get("playerid"),
+            "player_name": player.get("name"),
+            "online": True,
+            "resolved_by": resolution["resolved_by"],
+            "mode": mode or None,
+            "playing": mode == "play",
+            "paused": mode == "pause",
+            "power": chosen.get("power"),
+            "playlist": session["playlist_name"] if session else None,
+            "session": session is not None,
+            "members": members,
+        }
+        result.update(self._mixer_payload(chosen))
+        return result
+
+    def _mark_remote_skip(self, player_id: str) -> None:
+        """Een skip via de API is geen skip-storm; de receiver mag blijven staan."""
+        self._expected_skip_until[player_id] = time.time() + 30.0
+        self._skip_storm.pop(player_id, None)
+
+    def _current_muted(self, player_id: str, status: Dict[str, Any]) -> Optional[bool]:
+        """Mute-stand, met voorrang voor wat de engine zelf net zette.
+
+        Een Cast-speler die uit staat krijgt `mixer muting` pas door als hij weer
+        praat; de status kan dus kort de oude stand tonen. De eigen opdracht van de
+        laatste seconden is dan betrouwbaarder dan de status.
+        """
+        muted = self._mixer_payload(status)["muted"]
+        cached = self._mute_state.get(player_id)
+        if cached and time.time() - float(cached[1]) < 5.0:
+            return bool(cached[0])
+        return muted
+
+    def _wait_for_mute(self, player_id: str, expected: bool, status: Dict[str, Any], attempts: int = 4) -> Dict[str, Any]:
+        """Leest de mute-stand opnieuw tot LMS hem bevestigt (max ~1 s)."""
+        for _ in range(attempts):
+            if self._mixer_payload(status)["muted"] in (None, expected):
+                return status
+            time.sleep(0.25)
+            try:
+                status = self.lms.status(player_id)
+            except RequestError:
+                return status
+        return status
+
+    @staticmethod
+    def _require_queue(player: Dict[str, Any], queue_tracks: int) -> None:
+        if queue_tracks <= 0:
+            raise RequestError(
+                f"Er staat niets in de wachtrij van {player.get('name')}; start eerst een playlist.",
+                HTTPStatus.CONFLICT,
+            )
+
+    @classmethod
+    def _require_playing(cls, player: Dict[str, Any], mode: str, queue_tracks: int) -> None:
+        """next/previous alleen tijdens weergave of pauze.
+
+        LMS voert `playlist index +1` ook uit op een stilstaande speler en start
+        dan de weergave; een transportknop hoort dat niet te doen.
+        """
+        cls._require_queue(player, queue_tracks)
+        if mode not in {"play", "pause"}:
+            raise RequestError(
+                f"{player.get('name')} staat stil; next/previous zou de weergave starten. Gebruik play_pause.",
+                HTTPStatus.CONFLICT,
+            )
+
+    def control_player(
+        self,
+        action: str,
+        room: Optional[str] = None,
+        player_name: Optional[str] = None,
+        player_id: Optional[str] = None,
+        value: Optional[int] = None,
+        delta: Optional[int] = None,
+        muted: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """Volume, mute en transport voor één knop, met automatische spelerskeuze."""
+        normalized = str(action or "").strip().lower().replace("-", "_").replace(" ", "_")
+        if not normalized:
+            raise RequestError("Missing required parameter: action")
+
+        resolution = self._resolve_zone(room=room, player_name=player_name, player_id=player_id)
+        player = resolution["player"]
+        resolved_id = str(player["playerid"])
+        status = resolution["status"]
+        mode = str(status.get("mode") or "").lower()
+        queue_tracks = max(int(status.get("playlist_tracks") or 0), len(status.get("playlist_loop") or []))
+        room_definition = resolution["room_definition"]
+        step = room_definition.volume_step if room_definition else 5
+        volume = self._mixer_payload(status)["volume"]
+        changed: Dict[str, Any] = {}
+        target_muted: Optional[bool] = None
+
+        if normalized in {"volume", "volume_set", "volume_up", "volume_down", "vol_up", "vol_down"}:
+            if normalized in {"volume_up", "vol_up"}:
+                target: Optional[int] = (volume if volume is not None else 0) + step
+            elif normalized in {"volume_down", "vol_down"}:
+                target = (volume if volume is not None else 0) - step
+            elif value is not None:
+                target = int(value)
+            elif delta is not None:
+                target = volume + int(delta) if volume is not None else None
+            else:
+                raise RequestError("Geef value of delta mee bij een volume-actie.")
+
+            if target is None:
+                # Geen bekende beginwaarde: laat LMS de stap zelf zetten.
+                relative = int(delta) if delta is not None else (step if "up" in normalized else -step)
+                self.lms.change_volume(resolved_id, relative)
+            else:
+                new_volume = max(0, min(100, int(target)))
+                self.lms.set_volume(resolved_id, new_volume)
+                changed = {"volume_from": volume, "volume_to": new_volume}
+
+        elif normalized in {"mute", "mute_toggle", "mute_on", "mute_off", "muting"}:
+            if normalized == "mute_on":
+                target_muted = True
+                self.lms.set_muting(resolved_id, 1)
+            elif normalized == "mute_off":
+                target_muted = False
+                self.lms.set_muting(resolved_id, 0)
+            elif muted is not None:
+                target_muted = bool(muted)
+                self.lms.set_muting(resolved_id, 1 if muted else 0)
+            else:
+                current_muted = self._current_muted(resolved_id, status)
+                target_muted = None if current_muted is None else not current_muted
+                # Bewust een toggle: zo wisselt de knop altijd, ook als de
+                # gemeten stand even niet klopt.
+                self.lms.set_muting(resolved_id, "toggle")
+            if target_muted is not None:
+                self._mute_state[resolved_id] = (target_muted, time.time())
+
+        elif normalized in {"play_pause", "pause_toggle", "toggle_pause"}:
+            if mode == "play":
+                self.lms.pause(resolved_id)
+            elif mode == "pause":
+                self.lms.resume(resolved_id)
+            else:
+                self._require_queue(player, queue_tracks)
+                self.lms.play(resolved_id)
+
+        elif normalized == "play":
+            if mode == "pause":
+                self.lms.resume(resolved_id)
+            elif mode != "play":
+                self._require_queue(player, queue_tracks)
+                self.lms.play(resolved_id)
+
+        elif normalized == "pause":
+            if mode == "play":
+                self.lms.pause(resolved_id)
+
+        elif normalized in {"next", "next_track", "skip"}:
+            self._require_playing(player, mode, queue_tracks)
+            self._mark_remote_skip(resolved_id)
+            self.lms.next_track(resolved_id)
+
+        elif normalized in {"previous", "prev", "previous_track", "back"}:
+            self._require_playing(player, mode, queue_tracks)
+            self._mark_remote_skip(resolved_id)
+            self.lms.previous_track(resolved_id)
+
+        else:
+            raise RequestError(f"Onbekende actie: {action}", HTTPStatus.BAD_REQUEST)
+
+        try:
+            after = self.lms.status(resolved_id)
+        except RequestError:
+            after = status
+
+        if target_muted is not None:
+            after = self._wait_for_mute(resolved_id, target_muted, after)
+
+        after_mode = str(after.get("mode") or "").lower()
+        result: Dict[str, Any] = {
+            "ok": True,
+            "action": normalized,
+            "room": resolution["room"],
+            "player_id": resolved_id,
+            "player_name": player.get("name"),
+            "resolved_by": resolution["resolved_by"],
+            "mode": after_mode or None,
+            "playing": after_mode == "play",
+            "paused": after_mode == "pause",
+            "power": after.get("power"),
+            "changed": changed,
+        }
+        mixer = self._mixer_payload(after)
+        if target_muted is not None and mixer["muted"] not in (None, target_muted):
+            # Het apparaat heeft de stand nog niet doorgegeven; toon wat er is
+            # gevraagd en zeg eerlijk dat het nog niet bevestigd is.
+            mixer["muted"] = target_muted
+            changed["mute_confirmed"] = False
+        result.update(mixer)
+        LOGGER.info(
+            "Control request: action=%s room=%s player=%s resolved_by=%s mode=%s volume=%s muted=%s",
+            normalized,
+            resolution["room"],
+            player.get("name"),
+            resolution["resolved_by"],
+            result["mode"],
+            result["volume"],
+            result["muted"],
+        )
+        return result
 
     def start_playlist(self, playlist_name: str, player_name: Optional[str], player_id: Optional[str]) -> Dict[str, Any]:
         gestart_op = time.time()
@@ -1785,19 +2410,81 @@ class SessionManager:
                 LOGGER.warning("Could not power off %s: %s", player_id, exc)
             self.state_store.stop_session(player_id)
             self._clear_runtime_state(player_id)
+    def _offline_payload(
+        self,
+        name: Optional[str],
+        player_id: Optional[str],
+        room: Optional[str] = None,
+        player: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Stand van een speler die nu niet met LMS verbonden is.
+
+        Een laptop met squeezelite verdwijnt uit de spelerslijst zodra hij uit
+        gaat; dat is voor Homey een normale stand (online: false), geen fout.
+        """
+        resolved_id = (player or {}).get("playerid") or player_id
+        resolved_name = (player or {}).get("name") or name
+        session = self.state_store.get_session(resolved_id) if resolved_id else None
+        return {
+            "player_id": resolved_id,
+            "player_name": resolved_name,
+            "room": room,
+            "online": False,
+            "resolved_by": "offline",
+            "playing": False,
+            "paused": False,
+            "session": session is not None,
+            "stop_pending": bool(session and session.get("stop_after_track")),
+            "state": "offline",
+            "playlist": session["playlist_name"] if session else None,
+            "mode": None,
+            "power": None,
+            "volume": None,
+            "muted": None,
+        }
+
     def player_state(
         self,
         player_name: Optional[str],
         player_id: Optional[str],
+        room: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Actuele stand van één speler, voor Homey-flows.
 
-        `playing` is true zodra LMS daadwerkelijk afspeelt, ook als dat buiten de
-        engine om gaat. `session` zegt of de engine een playlist beheert.
+        `online` is false zodra de speler niet (meer) met LMS verbonden is, ook
+        als hij nooit eerder gezien is. `playing` is true zodra LMS daadwerkelijk
+        afspeelt, ook als dat buiten de engine om gaat. `session` zegt of de
+        engine een playlist beheert. Met `room` kiest de engine zelf de speler.
         """
-        player = self.lms.resolve_player(player_name, player_id)
+        if not room and not player_name and not player_id:
+            raise RequestError("Geef player_name, player_id of room mee.")
+
+        room_name: Optional[str] = None
+        resolved_by = "explicit"
+        if room:
+            try:
+                resolution = self._resolve_zone(room=room, player_name=player_name, player_id=player_id)
+            except RequestError as exc:
+                if exc.status != HTTPStatus.CONFLICT:
+                    raise
+                return self._offline_payload(player_name or player_id, None, room=room)
+            player = resolution["player"]
+            status = resolution["status"]
+            resolved_by = resolution["resolved_by"]
+            room_name = resolution["room"]
+        else:
+            player = self.lms.find_player(player_name, player_id)
+            if player is None:
+                return self._offline_payload(player_name or player_id, None)
+            connected = player.get("connected")
+            if connected is not None and int(connected) == 0:
+                return self._offline_payload(player.get("name"), player.get("playerid"), player=player)
+            try:
+                status = self.lms.status(player["playerid"])
+            except RequestError:
+                return self._offline_payload(player.get("name"), player.get("playerid"), player=player)
+
         pid = player["playerid"]
-        status = self.lms.status(pid)
         mode = str(status.get("mode") or "").lower()
         session = self.state_store.get_session(pid)
         playing = mode == "play"
@@ -1814,10 +2501,14 @@ class SessionManager:
         else:
             state = "idle"
 
-        return {
+        payload = {
             "player_id": pid,
             "player_name": player["name"],
+            "room": room_name,
+            "online": True,
+            "resolved_by": resolved_by,
             "playing": playing,
+            "paused": mode == "pause",
             "session": session is not None,
             "stop_pending": stop_pending,
             "state": state,
@@ -1825,20 +2516,30 @@ class SessionManager:
             "mode": mode or None,
             "power": status.get("power"),
         }
+        payload.update(self._mixer_payload(status))
+        return payload
 
     def toggle_playlist(
         self,
         playlist_name: Optional[str],
         player_name: Optional[str],
         player_id: Optional[str],
+        room: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Eén knop, drie toestanden; de engine is de enige die de stand kent.
 
         - geen sessie            -> playlist starten            (state: playing)
         - sessie, geen vlag      -> stoppen na dit nummer       (state: stopping_after_track)
         - sessie met vlag        -> direct alles stoppen        (state: stopped)
+
+        Met `room` (en zonder speler) bepaalt de engine welke speler van die kamer
+        de knop krijgt.
         """
-        player = self.lms.resolve_player(player_name, player_id)
+        if room and not (player_name or player_id):
+            resolution = self._resolve_zone(room=room)
+            player = resolution["player"]
+        else:
+            player = self.lms.resolve_player(player_name, player_id)
         pid = player["playerid"]
         session = self.state_store.get_session(pid)
 
@@ -1987,6 +2688,7 @@ class PlaylistApiHandler(BaseHTTPRequestHandler):
                                 "player_name": player.get("name"),
                                 "model": player.get("modelname"),
                                 "connected": player.get("connected"),
+                                "online": int(player.get("connected") if player.get("connected") is not None else 1) != 0,
                                 "power": player.get("power"),
                             }
                             for player in players
@@ -1999,21 +2701,70 @@ class PlaylistApiHandler(BaseHTTPRequestHandler):
                 json_response(self, HTTPStatus.OK, {"sessions": self.engine.state_store.list_sessions()})
                 return
 
+            if route == "/api/rooms":
+                json_response(self, HTTPStatus.OK, {"rooms": self.engine.config.room_payloads()})
+                return
+
+            if route == "/api/zone":
+                room = self._param(payload, query, "room", required=True)
+                json_response(self, HTTPStatus.OK, self.engine.session_manager.zone_state(room))
+                return
+
+            if route == "/api/control":
+                action = self._param(payload, query, "action", required=True)
+                room = self._param(payload, query, "room")
+                player_name = self._param(payload, query, "player_name")
+                player_id = self._param(payload, query, "player_id")
+                value = self._param_int(payload, query, "value")
+                delta = self._param_int(payload, query, "delta")
+                muted = self._param_bool(payload, query, "mute")
+                LOGGER.info(
+                    "Control request: action=%s room=%s player_name=%s player_id=%s value=%s delta=%s mute=%s",
+                    action,
+                    room,
+                    player_name,
+                    player_id,
+                    value,
+                    delta,
+                    muted,
+                )
+                result = self.engine.session_manager.control_player(
+                    action=action,
+                    room=room,
+                    player_name=player_name,
+                    player_id=player_id,
+                    value=value,
+                    delta=delta,
+                    muted=muted,
+                )
+                json_response(self, HTTPStatus.OK, result)
+                return
+
             if route in {"/api/state", "/api/player_state"}:
                 player_name = self._param(payload, query, "player_name")
                 player_id = self._param(payload, query, "player_id")
+                room = self._param(payload, query, "room")
                 json_response(
                     self,
                     HTTPStatus.OK,
-                    self.engine.session_manager.player_state(player_name, player_id),
+                    self.engine.session_manager.player_state(player_name, player_id, room),
                 )
                 return
 
             if route == "/api/playing":
                 player_name = self._param(payload, query, "player_name")
                 player_id = self._param(payload, query, "player_id")
-                state = self.engine.session_manager.player_state(player_name, player_id)
+                room = self._param(payload, query, "room")
+                state = self.engine.session_manager.player_state(player_name, player_id, room)
                 text_response(self, HTTPStatus.OK, "true" if state.get("playing") else "false")
+                return
+
+            if route == "/api/online":
+                player_name = self._param(payload, query, "player_name")
+                player_id = self._param(payload, query, "player_id")
+                room = self._param(payload, query, "room")
+                state = self.engine.session_manager.player_state(player_name, player_id, room)
+                text_response(self, HTTPStatus.OK, "true" if state.get("online") else "false")
                 return
 
             if route == "/api/start":
@@ -2047,13 +2798,15 @@ class PlaylistApiHandler(BaseHTTPRequestHandler):
                 playlist = self._param(payload, query, "playlist")
                 player_name = self._param(payload, query, "player_name")
                 player_id = self._param(payload, query, "player_id")
+                room = self._param(payload, query, "room")
                 LOGGER.info(
-                    "Toggle request: playlist=%s player_name=%s player_id=%s",
+                    "Toggle request: playlist=%s player_name=%s player_id=%s room=%s",
                     playlist,
                     player_name,
                     player_id,
+                    room,
                 )
-                result = self.engine.session_manager.toggle_playlist(playlist, player_name, player_id)
+                result = self.engine.session_manager.toggle_playlist(playlist, player_name, player_id, room)
                 json_response(self, HTTPStatus.OK, result)
                 return
 
@@ -2095,6 +2848,32 @@ class PlaylistApiHandler(BaseHTTPRequestHandler):
         if required and value in (None, ""):
             raise RequestError(f"Missing required parameter: {key}")
         return str(value) if value not in (None, "") else None
+
+    @classmethod
+    def _param_int(cls, payload: Dict[str, Any], query: Dict[str, List[str]], key: str) -> Optional[int]:
+        value = cls._param(payload, query, key)
+        if value is None:
+            return None
+        try:
+            return int(round(float(value)))
+        except (TypeError, ValueError):
+            raise RequestError(f"Parameter {key} must be a number, got: {value}")
+
+    @classmethod
+    def _param_bool(cls, payload: Dict[str, Any], query: Dict[str, List[str]], key: str) -> Optional[bool]:
+        raw = payload.get(key)
+        if raw is None:
+            raw = query.get(key, [None])[0]
+        if raw is None or raw == "":
+            return None
+        if isinstance(raw, bool):
+            return raw
+        text = str(raw).strip().lower()
+        if text in {"1", "true", "yes", "on", "aan"}:
+            return True
+        if text in {"0", "false", "no", "off", "uit"}:
+            return False
+        raise RequestError(f"Parameter {key} must be true or false, got: {raw}")
 
 
 class PlaylistEngineApp:
