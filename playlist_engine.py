@@ -917,7 +917,13 @@ class TrackSelector:
             kind = rule.get("kind")
             if kind == "exclude_genre":
                 blocked = str(rule.get("value", "")).strip().lower()
-                if blocked and any(blocked == genre.lower() for genre in track.get("genres", [])):
+                # Genre Hits wint van elke genre-uitsluiting, net als in de
+                # playlist-SQL: een nummer dat als hit getagd is mag altijd mee.
+                if (
+                    blocked
+                    and not self._has_genre(track, "Hits")
+                    and any(blocked == genre.lower() for genre in track.get("genres", []))
+                ):
                     return False
 
             if kind == "min_rating_stars":

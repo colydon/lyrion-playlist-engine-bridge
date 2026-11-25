@@ -70,6 +70,24 @@ NIEUWJAAR (genre NewYear, local LMS time)
   Party, Kerst, LUCARIX, Summer) weren NewYear-only nummers ook buiten
   1 januari, maar hebben geen eigen Nieuwjaarspool
 
+HITS WINT (sinds 25-11-2026)
+Een nummer met het genre Hits speelt altijd mee, ook als het daarnaast een
+genre heeft dat normaal geweigerd wordt: Kerst, Sinterklaas, NewYear, Lounge,
+Live, Karaoke, Kinderliedjes, Kindermuziek, en in de avond ook Party en Fout.
+In elke playlist staat daarom bij elke genre-uitsluiting "or is_hit = 1".
+
+Voorbeeld: het kerstnummer met ook het genre Hits speelt het hele jaar door,
+terwijl de andere kerstnummers gewoon tot het kerstseizoen beperkt blijven
+(die hebben geen Hits-tag).
+
+Wat NIET verandert:
+- de ratingregel (minimaal 2 sterren) blijft gelden, ook voor hits
+- de tempo/BPM-regels van DagMix/AvondMix/SummerMix/PartyMix blijven gelden
+- het thema van de playlist blijft leidend: een hit uit 2024 komt nog steeds
+  niet in 80sMix, een niet-Spaanse hit niet in SpaansMix
+- de engine heeft dezelfde regel in `skip_rules` (een hit wordt niet geweigerd
+  door exclude_genre)
+
 NORMAL MIX TARGET
 - Hits: 35%
 - Other: 65%

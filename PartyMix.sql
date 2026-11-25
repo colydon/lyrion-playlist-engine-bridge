@@ -133,22 +133,22 @@ base_eligible as (
         -- Automatisch afspelen vereist een rating van minimaal 2 sterren.
         and tp.rating >= 40
 
-        -- Live, Karaoke, Kinderliedjes en Kindermuziek vallen altijd af.
-        -- Lounge hoort alleen in SummerMix; in de andere mixen kwam het te
-        -- vaak langs. Handmatig queueen blijft gewoon mogelijk: dit is een
-        -- selectieregel, geen filter in LMS of Custom Skip.
-        and coalesce(gf.is_lounge, 0) = 0
+        -- HITS WINT: een nummer met het genre Hits speelt altijd mee, ook als
+        -- het daarnaast een genre heeft dat hier normaal geweigerd wordt
+        -- (Kerst, Sinterklaas, NewYear, Lounge, Live, Karaoke, ...).
+        and (coalesce(gf.is_lounge, 0) = 0 or coalesce(gf.is_hit, 0) = 1)
 
-        and coalesce(gf.is_permanent_exclusion, 0) = 0
+        and (coalesce(gf.is_permanent_exclusion, 0) = 0 or coalesce(gf.is_hit, 0) = 1)
 
         -- PartyMix is niet seizoensgebonden: nooit Kerst of Sinterklaas.
-        and coalesce(gf.is_christmas, 0) = 0
-        and coalesce(gf.is_sinterklaas, 0) = 0
+        and (coalesce(gf.is_christmas, 0) = 0 or coalesce(gf.is_hit, 0) = 1)
+        and (coalesce(gf.is_sinterklaas, 0) = 0 or coalesce(gf.is_hit, 0) = 1)
 
         -- Nieuwjaarsmuziek (genre NewYear) alleen op 1 januari (wel op
-        -- nieuwjaarsdag, niet op oudejaarsavond).
+        -- nieuwjaarsdag, niet op oudejaarsavond). Een hit mag altijd mee.
         and (
             coalesce(gf.is_newyear, 0) = 0
+            or coalesce(gf.is_hit, 0) = 1
             or strftime('%m-%d', 'now', 'localtime') = '01-01'
         )
 

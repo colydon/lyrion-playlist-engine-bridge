@@ -8,11 +8,13 @@ Er wordt een kleine synthetische LMS-database in .tmp/newyear_test/ gebouwd
 - id 100: genre NewYear (en verder niets), 5 ster
 - id 101: genre NewYear + Kerst, 5 ster
 - id 102: genre Kerst, 5 ster
+- id 103: genre Kerst + Hits, 5 ster (moet buiten december gewoon mee mogen)
 
 Daarna wordt elke playlist-SQL op drie "dagen" gedraaid door de datumfunctie
 in de SQL te vervangen door een vaste dag:
-- 22 november (buiten de seizoenen): geen enkel NewYear-nummer
-- 20 december: alleen het nummer dat ook Kerst is (101), nooit 100
+- 22 november (buiten de seizoenen): geen enkel NewYear-nummer en geen pure
+  kersttrack, maar de kersthit (103) mag wel mee
+- 20 december: alleen de nummers die ook Kerst zijn (101, 102, 103), nooit 100
 - 1 januari: 100 en 101 mogen mee, maar nooit samen in één selectie
 
 Tot slot wordt de engine zelf getest: genre_rules moet herhaling binnen een
@@ -21,6 +23,7 @@ in de wachtrij zetten (max_in_queue).
 
 Schrijft alleen in .tmp/ (gitignored).
 """
+import dataclasses
 import json
 import sqlite3
 import sys
@@ -74,7 +77,7 @@ def build_database() -> tuple:
         "insert into contributors (id, name) values (?, ?)",
         [(3, "LUCARIX")]
         + [(9 + track_id, f"Artiest {track_id}") for track_id in range(1, 21)]
-        + [(30, "Artiest Nieuwjaar"), (31, "Artiest Nieuwjaar 2"), (32, "Artiest Kerst")],
+        + [(30, "Artiest Nieuwjaar"), (31, "Artiest Nieuwjaar 2"), (32, "Artiest Kerst"), (33, "Artiest Kersthit")],
     )
     library.executemany(
         "insert into genres (id, name) values (?, ?)",
@@ -97,9 +100,11 @@ def build_database() -> tuple:
             (100, "Happy New Year", "file:///100.mp3", "md5-100", 240.0, 120, 1985, 1, 30),
             (101, "New Year's Day", "file:///101.mp3", "md5-101", 240.0, 118, 1985, 1, 31),
             (102, "Last Christmas", "file:///102.mp3", "md5-102", 240.0, 118, 1985, 1, 32),
+            # 103: hit die ook Kerst is -> moet buiten december gewoon mee mogen.
+            (103, "Kersthit", "file:///103.mp3", "md5-103", 200.0, 128, 2024, 1, 33),
         ]
     )
-    genres.extend([(100, 3), (101, 3), (101, 2), (102, 2)])
+    genres.extend([(100, 3), (101, 3), (101, 2), (102, 2), (103, 2), (103, 1)])
     library.executemany(
         "insert into tracks (id, title, url, urlmd5, secs, bpm, year, audio, primary_artist) "
         "values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -108,7 +113,7 @@ def build_database() -> tuple:
     library.executemany("insert into genre_track (track, genre) values (?, ?)", genres)
     library.executemany(
         "insert into contributor_track (track, contributor) values (?, ?)",
-        [(100, 30), (101, 31), (102, 32)],
+        [(100, 30), (101, 31), (102, 32), (103, 33)],
     )
     library.commit()
     library.close()
@@ -129,6 +134,7 @@ def build_database() -> tuple:
             ("md5-100", 100, 0, None),
             ("md5-101", 100, 0, None),
             ("md5-102", 100, 0, None),
+            ("md5-103", 100, 0, None),
         ]
     )
     persist.executemany(
@@ -181,19 +187,19 @@ def test_seasonal_gate(connection: sqlite3.Connection) -> None:
     sql = sql_for("KerstMix", "11-22")
     seen = {run_sample(connection, sql) for _ in range(20)}
     check(100 not in seen, "KerstMix op 22 nov: NewYear-only nummer 100 speelde mee")
-    check(seen <= {101, 102}, f"KerstMix op 22 nov: onverwachte ids {sorted(seen)}")
+    check(seen <= {101, 102, 103}, f"KerstMix op 22 nov: onverwachte ids {sorted(seen)}")
 
     # 20 december: het nummer met Kerst + NewYear volgt de kerstregels.
     for playlist in ("DagMix", "AvondMix"):
         sql = sql_for(playlist, "12-20")
         seen = {run_sample(connection, sql) for _ in range(40)}
         check(100 not in seen, f"{playlist} op 20 dec: NewYear-only nummer 100 speelde mee")
-        check(seen <= {101, 102}, f"{playlist} op 20 dec: onverwachte ids {sorted(seen)}")
-        check(bool(seen & {101, 102}), f"{playlist} op 20 dec: geen kerstnummers gekozen")
+        check(seen <= {101, 102, 103}, f"{playlist} op 20 dec: onverwachte ids {sorted(seen)}")
+        check(bool(seen & {101, 102, 103}), f"{playlist} op 20 dec: geen kerstnummers gekozen")
 
     sql = sql_for("KerstMix", "12-20")
     seen = {run_sample(connection, sql) for _ in range(20)}
-    check(seen == {101, 102}, f"KerstMix op 20 dec: verwacht 101/102, kreeg {sorted(seen)}")
+    check(seen == {101, 102, 103}, f"KerstMix op 20 dec: verwacht 101/102/103, kreeg {sorted(seen)}")
 
     # 1 januari: een kerstnummer met NewYear mag mee, een puur kerstnummer niet.
     sql = sql_for("DagMix", "01-01")
@@ -252,6 +258,21 @@ def test_theme_playlist_january(connection: sqlite3.Connection) -> None:
     check(100 in seen, "80sMix op 1 jan: NewYear-nummer 100 kwam nooit langs")
 
 
+def test_hits_priority(connection: sqlite3.Connection) -> None:
+    """Genre Hits wint van de genre-filters, maar niet van de playlist-selectie."""
+    for playlist in ("DagMix", "AvondMix", "HitsMix", "PartyMix", "SummerMix", "KerstMix"):
+        seen = set(run_full(connection, sql_for(playlist, "11-22")))
+        check(103 in seen, f"{playlist} op 22 nov: kersthit 103 speelde niet mee")
+        if playlist != "KerstMix":
+            check(102 not in seen, f"{playlist} op 22 nov: pure kersttrack 102 speelde mee")
+
+    # De hits-uitzondering gaat alleen over genres: het jaartal en het thema
+    # van de playlist blijven gewoon filteren.
+    for playlist in ("80sMix", "OldiesMix", "SpaansMix"):
+        seen = set(run_full(connection, sql_for(playlist, "11-22")))
+        check(103 not in seen, f"{playlist}: kersthit 103 hoort hier niet (thema-selectie)")
+
+
 def test_engine_genre_rules(library_db: Path, persist_db: Path) -> None:
     """Engine: herhaling binnen een sessie + maximaal één in de wachtrij."""
     playlists_dir = TMP / "playlists"
@@ -284,6 +305,16 @@ def test_engine_genre_rules(library_db: Path, persist_db: Path) -> None:
     store = pe.StateStore(state_db)
     selector = pe.TrackSelector(config, store)
     player = "aa:aa"
+
+    # Genre Hits wint ook in de engine van een exclude_genre-regel.
+    with_skip = dataclasses.replace(
+        config, skip_rules=[{"kind": "exclude_genre", "value": "Karaoke", "enabled": True}]
+    )
+    skip_selector = pe.TrackSelector(with_skip, store)
+    check(skip_selector._passes_skip_rules({"genres": ["Karaoke"], "rating": 100}) is False,
+          "engine: Karaoke wordt niet geweerd")
+    check(skip_selector._passes_skip_rules({"genres": ["Karaoke", "Hits"], "rating": 100}) is True,
+          "engine: hit met Karaoke wordt nog steeds geweerd")
 
     first = selector.choose_tracks("DagMix", player, 20, [])
     newyear_first = [track["id"] for track in first if track["id"] in (100, 101)]
@@ -329,6 +360,7 @@ def main() -> int:
     # Eerst de themaplaylist: die gebruikt de gewone tier-cooldown, dus de
     # lastPlayed-waarden die de rotatietest hierna zet mogen nog niet gelden.
     test_theme_playlist_january(connection)
+    test_hits_priority(connection)
     test_newyear_rotation(connection, persist_db)
 
     # Alle SQL-bestanden moeten in elk geval uitvoerbaar zijn.

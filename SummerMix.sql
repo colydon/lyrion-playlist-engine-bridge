@@ -204,7 +204,9 @@ base_eligible as (
 
         -- Permanente Custom Skip-uitsluitingen ook hier weren, zodat er geen
         -- selectiepogingen verloren gaan aan nummers die toch geskipt worden.
-        and coalesce(gf.is_permanent_exclusion, 0) = 0
+        -- HITS WINT: een nummer met het genre Hits speelt altijd mee, ook als
+        -- het daarnaast een genre heeft dat hier normaal geweigerd wordt.
+        and (coalesce(gf.is_permanent_exclusion, 0) = 0 or coalesce(gf.is_hit, 0) = 1)
 
         -- Very Fast valt altijd af. In de avond vallen ook Fast en nummers
         -- zonder TEMPO-tag met een hoge BPM af.
@@ -229,19 +231,22 @@ base_eligible as (
             or coalesce(gf.is_christmas, 0) = 0
             -- Een nummer met Kerst en NewYear erop mag op nieuwjaarsdag mee.
             or (coalesce(gf.is_newyear, 0) = 1 and strftime('%m-%d', 'now', 'localtime') = '01-01')
+            or coalesce(gf.is_hit, 0) = 1
         )
 
         -- Sinterklaas is alleen op 5 december beschikbaar.
         and (
             s.sinterklaas_share > 0
             or coalesce(gf.is_sinterklaas, 0) = 0
+            or coalesce(gf.is_hit, 0) = 1
         )
 
         -- Nieuwjaarsmuziek (genre NewYear) alleen op 1 januari. Heeft een
         -- nummer daarnaast ook Kerst, dan volgt het de kerstregels en wordt
-        -- het dus niet geweerd.
+        -- het dus niet geweerd. Een hit mag altijd mee.
         and (
             coalesce(gf.is_newyear, 0) = 0
+            or coalesce(gf.is_hit, 0) = 1
             or coalesce(gf.is_christmas, 0) = 1
             or strftime('%m-%d', 'now', 'localtime') = '01-01'
         )

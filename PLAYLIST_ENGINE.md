@@ -498,6 +498,9 @@ bridge-log (`MaxSampleRate=`) en of `<binding>192.168.0.54</binding>` bewaard is
 - Seasonal rules such as Kerst and Sinterklaas remain best kept in SQL.
 - Time-of-day switching such as DagMix at 16:00 and AvondMix after 18:00 can now live in the engine through `routing_windows`.
 - Generic skip rules such as Live, Karaoke or minimum rating remain easier to manage in JSON.
+  Since 2026-11-25 the genre `Hits` overrides every `exclude_genre` rule, both in the playlist SQL
+  and in `_passes_skip_rules`: a track tagged Hits is never blocked by another genre. The rating
+  and tempo rules still apply. See README.txt, "HITS WINT".
 - Manual playback is never filtered. Custom Skip 3 hooked `playlist newsong` and deleted *any*
   matching track, including one the user started by hand, so its filter sets have been moved out
   of `prefs/CustomSkip3/` (see README.txt, "CUSTOM SKIP"). Selection rules live in the SQL and in

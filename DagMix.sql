@@ -226,14 +226,15 @@ base_eligible as (
             or (s.sinterklaas_share > 0 and coalesce(gf.is_sinterklaas, 0) = 1)
         )
 
-        -- Permanent Custom Skip exclusions are also excluded here so DPL
-        -- does not spend selection attempts on tracks that will be skipped.
-        -- Lounge hoort alleen in SummerMix; in de andere mixen kwam het te
-        -- vaak langs. Handmatig queueen blijft gewoon mogelijk: dit is een
-        -- selectieregel, geen filter in LMS of Custom Skip.
-        and coalesce(gf.is_lounge, 0) = 0
+        -- HITS WINT: een nummer met het genre Hits speelt altijd mee, ook als
+        -- het daarnaast een genre heeft dat hier normaal geweigerd wordt
+        -- (Kerst, Sinterklaas, NewYear, Lounge, Live, Karaoke, ...). Daarom
+        -- staat bij elke genre-uitsluiting hieronder "or is_hit = 1".
+        -- De rating- en temporegels blijven wel gelden: dit gaat alleen over
+        -- genres, niet over kwaliteit of tempo.
+        and (coalesce(gf.is_lounge, 0) = 0 or coalesce(gf.is_hit, 0) = 1)
 
-        and coalesce(gf.is_permanent_exclusion, 0) = 0
+        and (coalesce(gf.is_permanent_exclusion, 0) = 0 or coalesce(gf.is_hit, 0) = 1)
 
         -- DagMix should never auto-pick tracks explicitly tagged as Very Fast.
         and coalesce(tf.is_very_fast, 0) = 0
@@ -247,12 +248,14 @@ base_eligible as (
             or coalesce(gf.is_christmas, 0) = 0
             -- Een nummer met Kerst en NewYear erop mag op nieuwjaarsdag mee.
             or (s.newyear_share > 0 and coalesce(gf.is_newyear, 0) = 1)
+            or coalesce(gf.is_hit, 0) = 1
         )
 
         -- Sinterklaas is only eligible on Dec 5.
         and (
             s.sinterklaas_share > 0
             or coalesce(gf.is_sinterklaas, 0) = 0
+            or coalesce(gf.is_hit, 0) = 1
         )
 
         -- Nieuwjaarsmuziek (genre NewYear) alleen op 1 januari. Heeft een
@@ -261,6 +264,7 @@ base_eligible as (
         -- alleen degene die het langst niet speelde mee (rotatie).
         and (
             coalesce(gf.is_newyear, 0) = 0
+            or coalesce(gf.is_hit, 0) = 1
             or (coalesce(gf.is_christmas, 0) = 1 and s.christmas_share > 0)
             or (
                 s.newyear_share > 0

@@ -141,6 +141,13 @@ lijst: de playlist valt nooit stil.
   (`newyear_gap_seconds`). Gemeten over 24 uur komt dat neer op gemiddeld één
   per ~60 minuten. De engine houdt daarnaast hooguit één Nieuwjaarsnummer
   tegelijk in de wachtrij (`genre_rules`).
+- **Hits wint** (sinds 25-11-2026): een nummer met het genre Hits mag altijd
+  mee, ook als het daarnaast Kerst, Sinterklaas, NewYear, Lounge, Live,
+  Karaoke, Kinderliedjes of Kindermuziek is (en in AvondMix ook Party of Fout).
+  De ratingregel (min. 2 ster) en de tempo-regels blijven wel gelden, en het
+  thema van een playlist blijft leidend. Zo speelt een kerstnummer dat ook als
+  hit getagd is het hele jaar door, terwijl de overige kerstnummers binnen het
+  kerstseizoen blijven.
 - **Party** valt buiten AvondMix.
 - **Onder 2 ster** doet niet mee, met Sinterklaas als enige uitzondering.
 
